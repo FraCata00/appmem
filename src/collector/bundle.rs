@@ -12,7 +12,11 @@ pub struct PlistBundles {
 
 impl BundleInfo for PlistBundles {
     fn meta(&mut self, bundle: &Path) -> AppMeta {
-        let (name, bundle_id) = self.cache.entry(bundle.to_path_buf()).or_insert_with(|| read(bundle)).clone();
+        let (name, bundle_id) = self
+            .cache
+            .entry(bundle.to_path_buf())
+            .or_insert_with(|| read(bundle))
+            .clone();
         AppMeta { name, bundle_id }
     }
 }
@@ -30,6 +34,8 @@ fn read(bundle: &Path) -> (String, Option<String>) {
         .file_name()
         .map(|n| n.to_string_lossy().trim_end_matches(".app").to_string())
         .unwrap_or_default();
-    let name = get("CFBundleDisplayName").or_else(|| get("CFBundleName")).unwrap_or(folder);
+    let name = get("CFBundleDisplayName")
+        .or_else(|| get("CFBundleName"))
+        .unwrap_or(folder);
     (name, get("CFBundleIdentifier"))
 }

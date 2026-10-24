@@ -1,9 +1,9 @@
-pub mod format;
-pub mod model;
-pub mod attribution;
-pub mod grouping;
-pub mod collector;
 pub mod args;
+pub mod attribution;
+pub mod collector;
+pub mod format;
+pub mod grouping;
+pub mod model;
 pub mod report;
-pub mod ui;
 pub mod terminate;
+pub mod ui;

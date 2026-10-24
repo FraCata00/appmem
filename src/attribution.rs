@@ -15,8 +15,10 @@ use std::path::{Component, Path, PathBuf};
 use crate::model::ProcInfo;
 
 const SYSTEM_PREFIXES: [&str; 5] = ["/System/", "/usr/", "/bin/", "/sbin/", "/Library/Apple/"];
-const APPLE_APP_DIRS: [&str; 2] =
-    ["/System/Applications/", "/System/Volumes/Preboot/Cryptexes/App/System/Applications/"];
+const APPLE_APP_DIRS: [&str; 2] = [
+    "/System/Applications/",
+    "/System/Volumes/Preboot/Cryptexes/App/System/Applications/",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Bucket {
@@ -60,10 +62,10 @@ pub fn attribute(proc: &ProcInfo, responsible_path: Option<&Path>, current_uid: 
     if own == Some(Bucket::Simulator) {
         return Bucket::Simulator;
     }
-    if let Some(responsible) = responsible_path.and_then(classify_path) {
-        if matches!(responsible, Bucket::App(_) | Bucket::Simulator) {
-            return responsible;
-        }
+    if let Some(responsible) = responsible_path.and_then(classify_path)
+        && matches!(responsible, Bucket::App(_) | Bucket::Simulator)
+    {
+        return responsible;
     }
     if let Some(bucket) = own {
         return bucket;
@@ -99,13 +101,19 @@ mod tests {
             "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/130.0/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)",
             501,
         );
-        assert_eq!(attribute(&r, None, 501), Bucket::App("/Applications/Google Chrome.app".into()));
+        assert_eq!(
+            attribute(&r, None, 501),
+            Bucket::App("/Applications/Google Chrome.app".into())
+        );
     }
 
     #[test]
     fn bundle_path_with_spaces() {
         let r = p("/Applications/My App 🚀.app/Contents/MacOS/x", 501);
-        assert_eq!(attribute(&r, None, 501), Bucket::App("/Applications/My App 🚀.app".into()));
+        assert_eq!(
+            attribute(&r, None, 501),
+            Bucket::App("/Applications/My App 🚀.app".into())
+        );
     }
 
     #[test]
@@ -125,7 +133,10 @@ mod tests {
 
     #[test]
     fn simulator_app_inside_xcode_is_simulator() {
-        let s = p("/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator", 501);
+        let s = p(
+            "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator",
+            501,
+        );
         assert_eq!(attribute(&s, None, 501), Bucket::Simulator);
     }
 
@@ -133,24 +144,36 @@ mod tests {
     fn responsible_app_wins_over_cli() {
         let cli = p("/Users/u/.cargo/bin/rust-analyzer", 501);
         let zed = Path::new("/Applications/Zed.app/Contents/MacOS/zed");
-        assert_eq!(attribute(&cli, Some(zed), 501), Bucket::App("/Applications/Zed.app".into()));
+        assert_eq!(
+            attribute(&cli, Some(zed), 501),
+            Bucket::App("/Applications/Zed.app".into())
+        );
     }
 
     #[test]
     fn system_daemon_responsible_for_itself_is_system() {
         let d = p("/usr/libexec/sharingd", 501);
-        assert_eq!(attribute(&d, Some(Path::new("/usr/libexec/sharingd")), 501), Bucket::System);
+        assert_eq!(
+            attribute(&d, Some(Path::new("/usr/libexec/sharingd")), 501),
+            Bucket::System
+        );
     }
 
     #[test]
     fn system_app_bundles_are_apps() {
-        let safari = p("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari", 501);
+        let safari = p(
+            "/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari",
+            501,
+        );
         assert_eq!(
             attribute(&safari, None, 501),
             Bucket::App("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app".into())
         );
         let notes = p("/System/Applications/Notes.app/Contents/MacOS/Notes", 501);
-        assert_eq!(attribute(&notes, None, 501), Bucket::App("/System/Applications/Notes.app".into()));
+        assert_eq!(
+            attribute(&notes, None, 501),
+            Bucket::App("/System/Applications/Notes.app".into())
+        );
     }
 
     #[test]
@@ -159,7 +182,8 @@ mod tests {
             "/System/Volumes/Preboot/Cryptexes/Incoming/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
             501,
         );
-        let safari = Path::new("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari");
+        let safari =
+            Path::new("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari");
         assert_eq!(
             attribute(&gpu, Some(safari), 501),
             Bucket::App("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app".into())
@@ -175,7 +199,10 @@ mod tests {
 
     #[test]
     fn user_cli_without_app_is_command_line() {
-        assert_eq!(attribute(&p("/opt/homebrew/bin/node", 501), None, 501), Bucket::CommandLine);
+        assert_eq!(
+            attribute(&p("/opt/homebrew/bin/node", 501), None, 501),
+            Bucket::CommandLine
+        );
     }
 
     #[test]

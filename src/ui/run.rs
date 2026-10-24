@@ -75,7 +75,11 @@ impl<'c> App<'c> {
     fn event_loop(&mut self, terminal: &mut DefaultTerminal, interval: Duration) -> io::Result<()> {
         let mut next_refresh = Instant::now() + interval;
         loop {
-            if self.status.as_ref().is_some_and(|(_, at)| at.elapsed() >= STATUS_DURATION) {
+            if self
+                .status
+                .as_ref()
+                .is_some_and(|(_, at)| at.elapsed() >= STATUS_DURATION)
+            {
                 self.status = None;
             }
             let prompt = self.pending.as_ref().map(confirm_prompt);
@@ -91,13 +95,15 @@ impl<'c> App<'c> {
                 draw(frame, &view);
             })?;
 
-            let timeout = next_refresh.saturating_duration_since(Instant::now()).min(STATUS_DURATION);
-            if event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press && !self.handle_key(key.code, key.modifiers) {
-                        return Ok(());
-                    }
-                }
+            let timeout = next_refresh
+                .saturating_duration_since(Instant::now())
+                .min(STATUS_DURATION);
+            if event::poll(timeout)?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && !self.handle_key(key.code, key.modifiers)
+            {
+                return Ok(());
             }
             if Instant::now() >= next_refresh {
                 self.refresh();
@@ -190,7 +196,13 @@ mod tests {
                 proc(11, "/nonexistent/Fake.app/Contents/Helpers/helper"),
                 proc(20, "/usr/libexec/sysd"),
             ],
-            stats: SystemStats { total: 8 << 30, used: 3 << 30, wired: 0, swap_used: 0, pressure: Pressure::Normal },
+            stats: SystemStats {
+                total: 8 << 30,
+                used: 3 << 30,
+                wired: 0,
+                swap_used: 0,
+                pressure: Pressure::Normal,
+            },
             current_uid: 501,
             self_pid: 9999,
         })

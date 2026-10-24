@@ -49,7 +49,11 @@ pub fn draw(frame: &mut Frame, view: &View) {
         .take(height)
         .map(|(i, row)| {
             let line = Line::from(row_text(row, view.stats.total, width));
-            if Some(i) == selected { line.style(Style::new().add_modifier(Modifier::REVERSED)) } else { line }
+            if Some(i) == selected {
+                line.style(Style::new().add_modifier(Modifier::REVERSED))
+            } else {
+                line
+            }
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), list);
@@ -69,17 +73,38 @@ fn header_line(view: &View) -> Line<'static> {
         Pressure::Warn => (5, Color::Yellow),
         Pressure::Critical => (8, Color::Red),
     };
-    let style = if view.color { Style::new().fg(color) } else { Style::new() };
+    let style = if view.color {
+        Style::new().fg(color)
+    } else {
+        Style::new()
+    };
     Line::from(vec![
-        Span::raw(format!("Memory {}/{} GB (wired {})  Pressure ", gb(stats.used), gb(stats.total), gb(stats.wired))),
-        Span::styled(format!("{}{} {}", "■".repeat(filled), "□".repeat(8 - filled), pressure_word(stats.pressure)), style),
+        Span::raw(format!(
+            "Memory {}/{} GB (wired {})  Pressure ",
+            gb(stats.used),
+            gb(stats.total),
+            gb(stats.wired)
+        )),
+        Span::styled(
+            format!(
+                "{}{} {}",
+                "■".repeat(filled),
+                "□".repeat(8 - filled),
+                pressure_word(stats.pressure)
+            ),
+            style,
+        ),
         Span::raw(format!("  Swap {} GB", gb(stats.swap_used))),
     ])
 }
 
 fn row_text(row: &Row, total_memory: u64, width: usize) -> String {
     let with_bar = width >= BAR_MIN_WIDTH;
-    let tail = if with_bar { TAIL_COLUMNS + 2 + BAR_WIDTH } else { TAIL_COLUMNS };
+    let tail = if with_bar {
+        TAIL_COLUMNS + 2 + BAR_WIDTH
+    } else {
+        TAIL_COLUMNS
+    };
     let name_width = width.saturating_sub(2 + tail).max(4);
     match row {
         Row::Group(group, open) => {
@@ -103,7 +128,12 @@ fn row_text(row: &Row, total_memory: u64, width: usize) -> String {
             format_bytes(proc.footprint.unwrap_or(0))
         ),
         Row::More { count, total, .. } => {
-            format!("    {}  {:>8}  {:>9}", pad(&format!("… {count} more"), name_width - 2), "", format_bytes(*total))
+            format!(
+                "    {}  {:>8}  {:>9}",
+                pad(&format!("… {count} more"), name_width - 2),
+                "",
+                format_bytes(*total)
+            )
         }
     }
 }
@@ -129,7 +159,13 @@ mod tests {
     const GB: u64 = 1024 * MB;
 
     fn stats() -> SystemStats {
-        SystemStats { total: 8 * GB, used: 7 * GB, wired: GB, swap_used: 2 * GB, pressure: Pressure::Warn }
+        SystemStats {
+            total: 8 * GB,
+            used: 7 * GB,
+            wired: GB,
+            swap_used: 2 * GB,
+            pressure: Pressure::Warn,
+        }
     }
 
     fn group(name: &str, n: i32, total: u64) -> Group {
@@ -155,13 +191,27 @@ mod tests {
     }
 
     fn system() -> Group {
-        Group { key: Bucket::System, name: "System".into(), bundle_id: None, procs: vec![], total: GB, estimated: true }
+        Group {
+            key: Bucket::System,
+            name: "System".into(),
+            bundle_id: None,
+            procs: vec![],
+            total: GB,
+            estimated: true,
+        }
     }
 
     fn screen(w: u16, h: u16, groups: &[Group], state: &UiState, prompt: Option<&str>) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let st = stats();
-        let view = View { stats: &st, groups, state, status: None, prompt, color: true };
+        let view = View {
+            stats: &st,
+            groups,
+            state,
+            status: None,
+            prompt,
+            color: true,
+        };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buf = terminal.backend().buffer().clone();
         (0..h)
@@ -205,14 +255,19 @@ mod tests {
         state.toggle_expand();
         let lines = screen(80, 24, &groups, &state, None);
         assert!(lines[1].starts_with("▾ Google Chrome"));
-        let procs = lines.iter().filter(|l| l.starts_with("    Google Chrome Helper")).count();
+        let procs = lines
+            .iter()
+            .filter(|l| l.starts_with("    Google Chrome Helper"))
+            .count();
         assert_eq!(procs, 6);
         assert!(lines.iter().any(|l| l.starts_with("    … 3 more")));
     }
 
     #[test]
     fn renders_in_tiny_terminal() {
-        let groups: Vec<Group> = (0..20).map(|i| group(&format!("App{i:02}"), 1, (20 - i) as u64 * MB)).collect();
+        let groups: Vec<Group> = (0..20)
+            .map(|i| group(&format!("App{i:02}"), 1, (20 - i) as u64 * MB))
+            .collect();
         let mut state = selected(&groups);
         state.move_selection(&groups, 14);
         assert_eq!(state.selected, Some(RowId::Group(groups[14].key.clone())));
@@ -222,7 +277,10 @@ mod tests {
 
     #[test]
     fn truncates_wide_names() {
-        let groups = vec![group("🚀🚀🚀 Very Long Application Name That Goes On And On", 1, GB), group("Xcode", 1, GB / 2)];
+        let groups = vec![
+            group("🚀🚀🚀 Very Long Application Name That Goes On And On", 1, GB),
+            group("Xcode", 1, GB / 2),
+        ];
         let lines = screen(80, 24, &groups, &selected(&groups), None);
         let long = &lines[1];
         let short = &lines[2];

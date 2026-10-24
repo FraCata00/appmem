@@ -24,7 +24,10 @@ pub struct MacCollector {
 
 impl MacCollector {
     pub fn new() -> MacCollector {
-        MacCollector { responsible: ffi::responsible_fn(), pids: Vec::new() }
+        MacCollector {
+            responsible: ffi::responsible_fn(),
+            pids: Vec::new(),
+        }
     }
 
     fn list_pids(&mut self) -> io::Result<()> {
@@ -48,7 +51,9 @@ impl MacCollector {
 
     fn read_proc(&self, pid: libc::pid_t) -> Option<ProcInfo> {
         let info = bsd_info(pid)?;
-        let name = c_name(&info.pbi_name).filter(|n| !n.is_empty()).or_else(|| c_name(&info.pbi_comm))?;
+        let name = c_name(&info.pbi_name)
+            .filter(|n| !n.is_empty())
+            .or_else(|| c_name(&info.pbi_comm))?;
         let responsible_pid = self.responsible.and_then(|f| {
             // SAFETY: the function takes any pid and returns -1 on failure.
             let r = unsafe { f(pid) };
@@ -129,7 +134,12 @@ fn system_stats() -> io::Result<SystemStats> {
     let mut count = libc::HOST_VM_INFO64_COUNT;
     // SAFETY: `count` is the struct size in natural_t units; the kernel writes at most that.
     let rc = unsafe {
-        libc::host_statistics64(ffi::mach_host_self(), libc::HOST_VM_INFO64, vm.as_mut_ptr().cast(), &mut count)
+        libc::host_statistics64(
+            ffi::mach_host_self(),
+            libc::HOST_VM_INFO64,
+            vm.as_mut_ptr().cast(),
+            &mut count,
+        )
     };
     if rc != libc::KERN_SUCCESS {
         return Err(io::Error::other(format!("host_statistics64 failed: {rc}")));
@@ -140,5 +150,11 @@ fn system_stats() -> io::Result<SystemStats> {
     let wired = u64::from(vm.wire_count) * page;
     let used = (app + u64::from(vm.wire_count) + u64::from(vm.compressor_page_count)) * page;
 
-    Ok(SystemStats { total, used: used.min(total), wired, swap_used, pressure: Pressure::from_level(pressure) })
+    Ok(SystemStats {
+        total,
+        used: used.min(total),
+        wired,
+        swap_used,
+        pressure: Pressure::from_level(pressure),
+    })
 }

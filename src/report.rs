@@ -25,7 +25,11 @@ pub fn gb(bytes: u64) -> String {
 
 /// `█`/`░` bar of `width` cells for `value` out of `max`.
 pub fn bar(value: u64, max: u64, width: usize) -> String {
-    let filled = if max == 0 { 0 } else { ((value as f64 / max as f64) * width as f64).round() as usize };
+    let filled = if max == 0 {
+        0
+    } else {
+        ((value as f64 / max as f64) * width as f64).round() as usize
+    };
     let filled = filled.min(width);
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
@@ -70,19 +74,40 @@ mod tests {
     const GB: u64 = 1024 * 1024 * 1024;
 
     fn group(key: Bucket, name: &str, total: u64, estimated: bool) -> Group {
-        Group { key, name: name.into(), bundle_id: None, procs: vec![], total, estimated }
+        Group {
+            key,
+            name: name.into(),
+            bundle_id: None,
+            procs: vec![],
+            total,
+            estimated,
+        }
     }
 
     #[test]
     fn report_lists_system_last_with_tilde() {
-        let stats = SystemStats { total: 8 * GB, used: 6 * GB, wired: GB, swap_used: 2 * GB, pressure: Pressure::Warn };
+        let stats = SystemStats {
+            total: 8 * GB,
+            used: 6 * GB,
+            wired: GB,
+            swap_used: 2 * GB,
+            pressure: Pressure::Warn,
+        };
         let groups = vec![
-            group(Bucket::App("/Applications/Google Chrome.app".into()), "Google Chrome", 3 * GB, false),
+            group(
+                Bucket::App("/Applications/Google Chrome.app".into()),
+                "Google Chrome",
+                3 * GB,
+                false,
+            ),
             group(Bucket::System, "System", GB, true),
         ];
         let out = render_report(&stats, &groups, 80);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines[0], "Memory 6.00/8.00 GB (wired 1.00)  Pressure warn  Swap 2.00 GB");
+        assert_eq!(
+            lines[0],
+            "Memory 6.00/8.00 GB (wired 1.00)  Pressure warn  Swap 2.00 GB"
+        );
         assert!(lines[1].starts_with("Google Chrome"));
         assert!(lines.last().unwrap().starts_with("System"));
         assert!(lines.last().unwrap().contains("~1.00 GB"));

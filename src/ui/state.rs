@@ -50,7 +50,11 @@ impl UiState {
             let hidden = &group.procs[group.procs.len().min(EXPANDED_LIMIT)..];
             if !hidden.is_empty() {
                 let total = hidden.iter().filter_map(|p| p.footprint).sum();
-                rows.push(Row::More { group, count: hidden.len(), total });
+                rows.push(Row::More {
+                    group,
+                    count: hidden.len(),
+                    total,
+                });
             }
         }
         rows
@@ -69,7 +73,11 @@ impl UiState {
             self.selected = None;
             return;
         }
-        let current = self.selected.as_ref().and_then(|s| ids.iter().position(|id| id == s)).unwrap_or(0);
+        let current = self
+            .selected
+            .as_ref()
+            .and_then(|s| ids.iter().position(|id| id == s))
+            .unwrap_or(0);
         let target = (current as i64 + i64::from(delta)).clamp(0, ids.len() as i64 - 1) as usize;
         self.selected = Some(ids[target].clone());
     }
@@ -95,7 +103,9 @@ impl UiState {
         self.selected = match self.selected.take() {
             Some(RowId::Group(key)) if groups.iter().any(|g| g.key == key) => Some(RowId::Group(key)),
             Some(RowId::Proc(key, pid)) => match groups.iter().find(|g| g.key == key) {
-                Some(g) if self.expanded.contains(&key) && g.procs.iter().take(EXPANDED_LIMIT).any(|p| p.pid == pid) => {
+                Some(g)
+                    if self.expanded.contains(&key) && g.procs.iter().take(EXPANDED_LIMIT).any(|p| p.pid == pid) =>
+                {
                     Some(RowId::Proc(key, pid))
                 }
                 Some(_) => Some(RowId::Group(key)),
@@ -128,7 +138,14 @@ mod tests {
                 responsible_pid: None,
             })
             .collect();
-        Group { key: app(name), name: name.into(), bundle_id: None, procs, total: 1, estimated: false }
+        Group {
+            key: app(name),
+            name: name.into(),
+            bundle_id: None,
+            procs,
+            total: 1,
+            estimated: false,
+        }
     }
 
     fn ids(state: &UiState, groups: &[Group]) -> Vec<String> {
@@ -155,7 +172,10 @@ mod tests {
         let mut state = UiState::default();
         state.reconcile(&groups);
         state.toggle_expand();
-        assert_eq!(ids(&state, &groups), vec!["Chrome", "1", "2", "3", "4", "5", "6", "+3", "Xcode"]);
+        assert_eq!(
+            ids(&state, &groups),
+            vec!["Chrome", "1", "2", "3", "4", "5", "6", "+3", "Xcode"]
+        );
     }
 
     #[test]

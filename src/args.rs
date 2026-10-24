@@ -23,7 +23,10 @@ pub enum Parsed {
 }
 
 pub fn parse_args(args: impl Iterator<Item = String>) -> Result<Parsed, String> {
-    let mut parsed = Args { once: false, interval: Duration::from_secs(2) };
+    let mut parsed = Args {
+        once: false,
+        interval: Duration::from_secs(2),
+    };
     let mut args = args;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -54,14 +57,23 @@ mod tests {
 
     #[test]
     fn parse_defaults() {
-        assert_eq!(parse(&[]), Ok(Parsed::Run(Args { once: false, interval: Duration::from_secs(2) })));
+        assert_eq!(
+            parse(&[]),
+            Ok(Parsed::Run(Args {
+                once: false,
+                interval: Duration::from_secs(2)
+            }))
+        );
     }
 
     #[test]
     fn parse_interval() {
         assert_eq!(
             parse(&["--interval", "0.5", "--once"]),
-            Ok(Parsed::Run(Args { once: true, interval: Duration::from_millis(500) }))
+            Ok(Parsed::Run(Args {
+                once: true,
+                interval: Duration::from_millis(500)
+            }))
         );
     }
 

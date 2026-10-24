@@ -27,7 +27,13 @@ pub fn sysctl<T: Copy>(name: &CStr) -> Option<T> {
     let mut len = size_of::<T>();
     // SAFETY: the buffer is exactly `len` bytes and the kernel writes at most `len`.
     let rc = unsafe {
-        libc::sysctlbyname(name.as_ptr(), value.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0)
+        libc::sysctlbyname(
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
     };
     // SAFETY: on success with the full size written, the value is initialized.
     (rc == 0 && len == size_of::<T>()).then(|| unsafe { value.assume_init() })

@@ -30,8 +30,11 @@ pub struct Group {
 
 /// Groups readable processes per app, sorted by total with System always last.
 pub fn build_groups(snap: &Snapshot, bundles: &mut dyn BundleInfo) -> Vec<Group> {
-    let paths: HashMap<i32, &Path> =
-        snap.procs.iter().filter_map(|p| Some((p.pid, p.path.as_deref()?))).collect();
+    let paths: HashMap<i32, &Path> = snap
+        .procs
+        .iter()
+        .filter_map(|p| Some((p.pid, p.path.as_deref()?)))
+        .collect();
 
     let mut groups: HashMap<Bucket, Group> = HashMap::new();
     let mut listed: u64 = 0;
@@ -48,14 +51,18 @@ pub fn build_groups(snap: &Snapshot, bundles: &mut dyn BundleInfo) -> Vec<Group>
         listed += footprint;
     }
 
-    let system = groups.entry(Bucket::System).or_insert_with(|| new_group(Bucket::System, bundles));
+    let system = groups
+        .entry(Bucket::System)
+        .or_insert_with(|| new_group(Bucket::System, bundles));
     let remainder = snap.stats.used.saturating_sub(snap.stats.wired).saturating_sub(listed);
     system.total += remainder;
     system.estimated = remainder > 0;
 
     let mut groups: Vec<Group> = groups.into_values().collect();
     for group in &mut groups {
-        group.procs.sort_by(|a, b| b.footprint.cmp(&a.footprint).then(a.pid.cmp(&b.pid)));
+        group
+            .procs
+            .sort_by(|a, b| b.footprint.cmp(&a.footprint).then(a.pid.cmp(&b.pid)));
     }
     groups.sort_by(|a, b| {
         (a.key == Bucket::System)
@@ -76,7 +83,14 @@ fn new_group(key: Bucket, bundles: &mut dyn BundleInfo) -> Group {
         Bucket::CommandLine => ("Command-line tools".to_string(), None),
         Bucket::System => ("System".to_string(), None),
     };
-    Group { key, name, bundle_id, procs: Vec::new(), total: 0, estimated: false }
+    Group {
+        key,
+        name,
+        bundle_id,
+        procs: Vec::new(),
+        total: 0,
+        estimated: false,
+    }
 }
 
 #[cfg(test)]
@@ -92,7 +106,10 @@ mod tests {
     impl BundleInfo for FakeBundles {
         fn meta(&mut self, bundle: &Path) -> AppMeta {
             let name = bundle.file_name().unwrap().to_string_lossy();
-            AppMeta { name: name.trim_end_matches(".app").to_string(), bundle_id: Some(format!("test.{name}")) }
+            AppMeta {
+                name: name.trim_end_matches(".app").to_string(),
+                bundle_id: Some(format!("test.{name}")),
+            }
         }
     }
 
@@ -111,7 +128,13 @@ mod tests {
     fn snap(procs: Vec<ProcInfo>, used: u64, wired: u64) -> Snapshot {
         Snapshot {
             procs,
-            stats: SystemStats { total: 8 * GB, used, wired, swap_used: 0, pressure: Pressure::Normal },
+            stats: SystemStats {
+                total: 8 * GB,
+                used,
+                wired,
+                swap_used: 0,
+                pressure: Pressure::Normal,
+            },
             current_uid: 501,
             self_pid: 9999,
         }
@@ -123,7 +146,11 @@ mod tests {
     #[test]
     fn groups_chrome_helpers_together() {
         let s = snap(
-            vec![proc(1, CHROME, Some(100 * MB)), proc(2, CHROME, Some(200 * MB)), proc(3, CHROME, Some(300 * MB))],
+            vec![
+                proc(1, CHROME, Some(100 * MB)),
+                proc(2, CHROME, Some(200 * MB)),
+                proc(3, CHROME, Some(300 * MB)),
+            ],
             600 * MB,
             0,
         );
@@ -145,7 +172,11 @@ mod tests {
 
     #[test]
     fn remainder_adds_to_system() {
-        let s = snap(vec![proc(1, CHROME, Some(3 * GB + GB / 2)), proc(2, SYS, Some(GB / 2))], 6 * GB, GB);
+        let s = snap(
+            vec![proc(1, CHROME, Some(3 * GB + GB / 2)), proc(2, SYS, Some(GB / 2))],
+            6 * GB,
+            GB,
+        );
         let groups = build_groups(&s, &mut FakeBundles);
         let system = groups.last().unwrap();
         assert_eq!(system.total, GB / 2 + GB);
@@ -188,7 +219,11 @@ mod tests {
     #[test]
     fn named_special_groups() {
         let cli = proc(1, "/opt/homebrew/bin/node", Some(GB));
-        let sim = proc(2, "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator", Some(GB));
+        let sim = proc(
+            2,
+            "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator",
+            Some(GB),
+        );
         let groups = build_groups(&snap(vec![cli, sim], 2 * GB, 0), &mut FakeBundles);
         let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
         assert!(names.contains(&"Command-line tools"));

@@ -6,6 +6,8 @@ description = "See which macOS app is using your memory, grouped per app, in the
 license = "MIT"
 repository = "https://github.com/OWNER/appmem"
 readme = "README.md"
+keywords = ["macos", "memory", "tui", "activity-monitor", "process"]
+categories = ["command-line-utilities", "os::macos-apis"]
 
 [dependencies]
 libc = "0.2.191"
