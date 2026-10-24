@@ -6,3 +6,4 @@ pub mod collector;
 pub mod args;
 pub mod report;
 pub mod ui;
+pub mod terminate;
