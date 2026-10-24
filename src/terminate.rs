@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Output, Stdio};
 
 use crate::attribution::Bucket;
 use crate::format::format_bytes;
@@ -49,7 +49,7 @@ pub fn plan_terminate(proc: &ProcInfo, group: &Group, snap: &Snapshot) -> Result
     if group.key == Bucket::System {
         return Err(SYSTEM_REFUSAL.into());
     }
-    if proc.uid != snap.current_uid {
+    if proc.uid != snap.current_uid || proc.uid == 0 {
         return Err(NOT_YOURS.into());
     }
     if protected_pids(snap).contains(&proc.pid) {
@@ -129,24 +129,37 @@ pub fn execute(action: &Action, current_path: impl Fn(i32) -> Option<PathBuf>) -
             }
         }
         Action::Quit { bundle_id, .. } => {
-            if bundle_id.contains(['"', '\\']) {
-                return Err(NO_BUNDLE_ID.into());
-            }
-            let script = format!("tell application id \"{bundle_id}\" to quit");
-            let output = Command::new("/usr/bin/osascript")
-                .args(["-e", &script])
-                .output()
-                .map_err(|e| e.to_string())?;
-            if output.status.success() {
-                return Ok(());
-            }
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("-1743") {
-                return Err(AUTOMATION_DENIED.into());
-            }
-            Err(stderr.lines().next().unwrap_or("osascript failed").to_string())
+            let child = start_quit(bundle_id)?;
+            quit_result(&child.wait_with_output().map_err(|e| e.to_string())?)
         }
     }
+}
+
+/// Sends the quit request without waiting: the app may sit on a save dialog for minutes.
+pub fn start_quit(bundle_id: &str) -> Result<Child, String> {
+    if bundle_id.contains(['"', '\\']) {
+        return Err(NO_BUNDLE_ID.into());
+    }
+    let script = format!("tell application id \"{bundle_id}\" to quit");
+    Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())
+}
+
+/// Turns a finished osascript run into the message shown to the user.
+pub fn quit_result(output: &Output) -> Result<(), String> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("-1743") {
+        return Err(AUTOMATION_DENIED.into());
+    }
+    Err(stderr.lines().next().unwrap_or("osascript failed").to_string())
 }
 
 #[cfg(test)]
@@ -178,6 +191,7 @@ mod tests {
                 used: 0,
                 wired: 0,
                 swap_used: 0,
+                app_footprint: 0,
                 pressure: Pressure::Normal,
             },
             current_uid: 501,
@@ -257,6 +271,15 @@ mod tests {
             plan_terminate(&renderer, &g, &snapshot(chain())).unwrap_err(),
             "Not your process"
         );
+    }
+
+    #[test]
+    fn refuses_root_process_even_when_running_as_root() {
+        let daemon = proc(300, 1, 0, "/Library/PrivilegedHelperTools/helperd", "helperd");
+        let g = group(Bucket::CommandLine, "Command-line tools", None, vec![daemon.clone()]);
+        let mut snap = snapshot(chain());
+        snap.current_uid = 0;
+        assert_eq!(plan_terminate(&daemon, &g, &snap).unwrap_err(), "Not your process");
     }
 
     #[test]

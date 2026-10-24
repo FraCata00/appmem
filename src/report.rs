@@ -91,6 +91,7 @@ mod tests {
             used: 6 * GB,
             wired: GB,
             swap_used: 2 * GB,
+            app_footprint: 0,
             pressure: Pressure::Warn,
         };
         let groups = vec![

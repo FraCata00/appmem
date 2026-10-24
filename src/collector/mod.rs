@@ -85,9 +85,17 @@ impl Collector for MacCollector {
             procs,
             stats: system_stats()?,
             // SAFETY: getuid never fails.
-            current_uid: unsafe { libc::getuid() },
+            current_uid: effective_user(unsafe { libc::getuid() }, std::env::var("SUDO_UID").ok().as_deref()),
             self_pid: std::process::id() as i32,
         })
+    }
+}
+
+/// Under `sudo`, the user who ran sudo, so root processes never count as "yours".
+fn effective_user(uid: u32, sudo_uid: Option<&str>) -> u32 {
+    match (uid, sudo_uid.and_then(|s| s.parse().ok())) {
+        (0, Some(real)) => real,
+        _ => uid,
     }
 }
 
@@ -149,12 +157,35 @@ fn system_stats() -> io::Result<SystemStats> {
     let app = u64::from(vm.internal_page_count).saturating_sub(u64::from(vm.purgeable_count));
     let wired = u64::from(vm.wire_count) * page;
     let used = (app + u64::from(vm.wire_count) + u64::from(vm.compressor_page_count)) * page;
+    let app_footprint = (app + vm.total_uncompressed_pages_in_compressor) * page;
 
     Ok(SystemStats {
         total,
         used: used.min(total),
         wired,
         swap_used,
+        app_footprint,
         pressure: Pressure::from_level(pressure),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sudo_user_is_the_real_user() {
+        assert_eq!(effective_user(0, Some("501")), 501);
+    }
+
+    #[test]
+    fn plain_root_stays_root() {
+        assert_eq!(effective_user(0, None), 0);
+        assert_eq!(effective_user(0, Some("garbage")), 0);
+    }
+
+    #[test]
+    fn normal_user_ignores_sudo_uid() {
+        assert_eq!(effective_user(501, Some("0")), 501);
+    }
 }

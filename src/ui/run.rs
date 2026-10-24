@@ -1,6 +1,7 @@
 //! Terminal setup and the event loop.
 
 use std::io;
+use std::process::Child;
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
@@ -9,11 +10,13 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 use crate::collector::{Collector, PlistBundles, proc_path};
 use crate::grouping::{Group, build_groups};
 use crate::model::Snapshot;
-use crate::terminate::{Action, confirm_prompt, execute, plan_quit, plan_terminate};
+use crate::terminate::{Action, confirm_prompt, execute, plan_quit, plan_terminate, quit_result, start_quit};
 use crate::ui::render::{View, draw};
 use crate::ui::state::{RowId, UiState};
 
 const STATUS_DURATION: Duration = Duration::from_secs(3);
+/// How often to check on a pending quit request.
+const QUIT_POLL: Duration = Duration::from_millis(200);
 
 struct App<'c> {
     collector: &'c mut dyn Collector,
@@ -22,6 +25,8 @@ struct App<'c> {
     groups: Vec<Group>,
     state: UiState,
     pending: Option<Action>,
+    /// An app we asked to quit, with osascript still waiting for its answer.
+    quitting: Option<(String, Child)>,
     status: Option<(String, Instant)>,
     color: bool,
 }
@@ -46,6 +51,7 @@ impl<'c> App<'c> {
             snap,
             state: UiState::default(),
             pending: None,
+            quitting: None,
             status: None,
             color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
         };
@@ -72,10 +78,37 @@ impl<'c> App<'c> {
         self.status = Some((message, Instant::now()));
     }
 
+    /// Reports the outcome of a quit request once osascript has finished.
+    fn poll_quit(&mut self) {
+        let Some((_, child)) = self.quitting.as_mut() else {
+            return;
+        };
+        match child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                let (name, child) = self.quitting.take().unwrap();
+                let outcome = child.wait_with_output().map_err(|e| e.to_string());
+                let message = match outcome.and_then(|output| quit_result(&output)) {
+                    Ok(()) => format!("{name} quit"),
+                    Err(err) => err,
+                };
+                self.set_status(message);
+                self.refresh();
+            }
+            Err(err) => {
+                self.quitting = None;
+                self.set_status(err.to_string());
+            }
+        }
+    }
+
     fn event_loop(&mut self, terminal: &mut DefaultTerminal, interval: Duration) -> io::Result<()> {
         let mut next_refresh = Instant::now() + interval;
         loop {
-            if self
+            self.poll_quit();
+            if let Some((name, _)) = &self.quitting {
+                self.status = Some((format!("Asking {name} to quit…"), Instant::now()));
+            } else if self
                 .status
                 .as_ref()
                 .is_some_and(|(_, at)| at.elapsed() >= STATUS_DURATION)
@@ -95,9 +128,12 @@ impl<'c> App<'c> {
                 draw(frame, &view);
             })?;
 
-            let timeout = next_refresh
+            let mut timeout = next_refresh
                 .saturating_duration_since(Instant::now())
                 .min(STATUS_DURATION);
+            if self.quitting.is_some() {
+                timeout = timeout.min(QUIT_POLL);
+            }
             if event::poll(timeout)?
                 && let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
@@ -119,15 +155,23 @@ impl<'c> App<'c> {
         }
         if let Some(action) = self.pending.take() {
             if matches!(code, KeyCode::Char('y' | 'Y')) {
-                let message = match execute(&action, proc_path) {
-                    Ok(()) => match &action {
-                        Action::Terminate { name, .. } => format!("Sent terminate to {name}"),
-                        Action::Quit { name, .. } => format!("Asked {name} to quit"),
+                match action {
+                    Action::Quit { name, bundle_id } => match start_quit(&bundle_id) {
+                        Ok(child) => {
+                            self.set_status(format!("Asking {name} to quit…"));
+                            self.quitting = Some((name, child));
+                        }
+                        Err(err) => self.set_status(err),
                     },
-                    Err(err) => err,
-                };
-                self.set_status(message);
-                self.refresh();
+                    Action::Terminate { ref name, .. } => {
+                        let message = match execute(&action, proc_path) {
+                            Ok(()) => format!("Sent terminate to {name}"),
+                            Err(err) => err,
+                        };
+                        self.set_status(message);
+                        self.refresh();
+                    }
+                }
             } else {
                 self.set_status("Cancelled".to_string());
             }
@@ -139,6 +183,10 @@ impl<'c> App<'c> {
             KeyCode::Down => self.state.move_selection(&self.groups, 1),
             KeyCode::Enter => self.state.toggle_expand(),
             KeyCode::Char('k') => match self.plan() {
+                Some(Ok(Action::Quit { .. })) if self.quitting.is_some() => {
+                    let name = self.quitting.as_ref().map(|(n, _)| n.clone()).unwrap_or_default();
+                    self.set_status(format!("Still waiting for {name} to quit"));
+                }
                 Some(Ok(action)) => self.pending = Some(action),
                 Some(Err(message)) => self.set_status(message),
                 None => {}
@@ -201,6 +249,7 @@ mod tests {
                 used: 3 << 30,
                 wired: 0,
                 swap_used: 0,
+                app_footprint: 0,
                 pressure: Pressure::Normal,
             },
             current_uid: 501,
@@ -245,6 +294,33 @@ mod tests {
         // The fake bundle has no Info.plist, so there is no bundle id to quit by.
         assert!(app.pending.is_none());
         assert_eq!(status(&app).as_deref(), Some("Can't identify this app to quit it"));
+    }
+
+    #[test]
+    fn confirmed_quit_does_not_block_the_ui() {
+        let mut c = collector();
+        let mut app = App::new(&mut c).unwrap();
+        app.pending = Some(Action::Quit {
+            name: "Fake".into(),
+            bundle_id: "invalid.appmem.test".into(),
+        });
+        let started = Instant::now();
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(status(&app).as_deref(), Some("Asking Fake to quit…"));
+        assert!(app.quitting.is_some());
+
+        // A second quit while the first is in flight is refused.
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert!(app.pending.is_none());
+
+        while app.quitting.is_some() && started.elapsed() < Duration::from_secs(20) {
+            app.poll_quit();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(app.quitting.is_none());
+        let done = status(&app).unwrap();
+        assert_ne!(done, "Asking Fake to quit…");
+        assert!(!done.is_empty());
     }
 
     #[test]

@@ -130,14 +130,18 @@ privileges. Decided by Claude after review:
 
 - **Wired memory** (kernel and drivers) is shown in the header line, e.g.
   `Memory 6.9/8.0 GB (wired 1.4)`, not as a row: the user can't act on it.
-- The **"System" row** contains readable system processes plus an estimated
-  remainder (used − wired − everything attributed), labeled with `~` to mark
-  it as an estimate.
+- The **"System" row** contains readable system processes. Only when some
+  processes can't be read, it also gets an estimated remainder, labeled with
+  `~`: app memory counted uncompressed (internal − purgeable pages plus
+  `total_uncompressed_pages_in_compressor`) minus every listed footprint.
+  Footprints count compressed pages at full size, so they are compared in
+  that space, not with "used".
 - "System" is **always pinned to the bottom** of the list regardless of size,
   so the top of the list always answers "which app can I do something
   about".
-- Header used memory + rows + wired should add up to used memory, within
-  rounding.
+- Rows do **not** add up to "used": footprints count compressed memory at its
+  uncompressed size and shared memory once per process, as Activity Monitor
+  does. Per-process numbers are what must match Activity Monitor.
 
 ## How processes are grouped into apps
 

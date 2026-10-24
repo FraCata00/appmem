@@ -38,8 +38,12 @@ pub fn build_groups(snap: &Snapshot, bundles: &mut dyn BundleInfo) -> Vec<Group>
 
     let mut groups: HashMap<Bucket, Group> = HashMap::new();
     let mut listed: u64 = 0;
+    let mut unreadable = false;
     for proc in &snap.procs {
-        let Some(footprint) = proc.footprint else { continue };
+        let Some(footprint) = proc.footprint else {
+            unreadable = true;
+            continue;
+        };
         let responsible = proc
             .responsible_pid
             .filter(|&pid| pid != proc.pid)
@@ -54,7 +58,13 @@ pub fn build_groups(snap: &Snapshot, bundles: &mut dyn BundleInfo) -> Vec<Group>
     let system = groups
         .entry(Bucket::System)
         .or_insert_with(|| new_group(Bucket::System, bundles));
-    let remainder = snap.stats.used.saturating_sub(snap.stats.wired).saturating_sub(listed);
+    // Only estimate when something couldn't be read: otherwise the gap is
+    // shared or kernel memory that belongs to no process in particular.
+    let remainder = if unreadable {
+        snap.stats.app_footprint.saturating_sub(listed)
+    } else {
+        0
+    };
     system.total += remainder;
     system.estimated = remainder > 0;
 
@@ -125,14 +135,15 @@ mod tests {
         }
     }
 
-    fn snap(procs: Vec<ProcInfo>, used: u64, wired: u64) -> Snapshot {
+    fn snap(procs: Vec<ProcInfo>, app_footprint: u64) -> Snapshot {
         Snapshot {
             procs,
             stats: SystemStats {
                 total: 8 * GB,
-                used,
-                wired,
+                used: app_footprint / 2,
+                wired: GB,
                 swap_used: 0,
+                app_footprint,
                 pressure: Pressure::Normal,
             },
             current_uid: 501,
@@ -152,7 +163,6 @@ mod tests {
                 proc(3, CHROME, Some(300 * MB)),
             ],
             600 * MB,
-            0,
         );
         let groups = build_groups(&s, &mut FakeBundles);
         let chrome = &groups[0];
@@ -164,7 +174,7 @@ mod tests {
 
     #[test]
     fn system_is_last_even_when_biggest() {
-        let s = snap(vec![proc(1, SYS, Some(3 * GB)), proc(2, CHROME, Some(GB))], 4 * GB, 0);
+        let s = snap(vec![proc(1, SYS, Some(3 * GB)), proc(2, CHROME, Some(GB))], 4 * GB);
         let groups = build_groups(&s, &mut FakeBundles);
         assert_eq!(groups.last().unwrap().key, Bucket::System);
         assert_eq!(groups[0].name, "Google Chrome");
@@ -172,10 +182,14 @@ mod tests {
 
     #[test]
     fn remainder_adds_to_system() {
+        // Footprints are compared with app memory counted uncompressed, not with "used".
         let s = snap(
-            vec![proc(1, CHROME, Some(3 * GB + GB / 2)), proc(2, SYS, Some(GB / 2))],
-            6 * GB,
-            GB,
+            vec![
+                proc(1, CHROME, Some(3 * GB + GB / 2)),
+                proc(2, SYS, Some(GB / 2)),
+                proc(3, SYS, None),
+            ],
+            5 * GB,
         );
         let groups = build_groups(&s, &mut FakeBundles);
         let system = groups.last().unwrap();
@@ -184,8 +198,23 @@ mod tests {
     }
 
     #[test]
+    fn no_estimate_when_every_process_is_readable() {
+        let s = snap(vec![proc(1, CHROME, Some(GB)), proc(2, SYS, Some(GB))], 5 * GB);
+        let system = build_groups(&s, &mut FakeBundles).pop().unwrap();
+        assert_eq!(system.total, GB);
+        assert!(!system.estimated);
+    }
+
+    #[test]
     fn remainder_saturates_at_zero() {
-        let s = snap(vec![proc(1, CHROME, Some(8 * GB)), proc(2, SYS, Some(GB))], 6 * GB, GB);
+        let s = snap(
+            vec![
+                proc(1, CHROME, Some(8 * GB)),
+                proc(2, SYS, Some(GB)),
+                proc(3, SYS, None),
+            ],
+            6 * GB,
+        );
         let groups = build_groups(&s, &mut FakeBundles);
         let system = groups.last().unwrap();
         assert_eq!(system.total, GB);
@@ -194,14 +223,14 @@ mod tests {
 
     #[test]
     fn unreadable_procs_are_not_listed() {
-        let s = snap(vec![proc(1, CHROME, Some(GB)), proc(2, CHROME, None)], GB, 0);
+        let s = snap(vec![proc(1, CHROME, Some(GB)), proc(2, CHROME, None)], GB);
         let groups = build_groups(&s, &mut FakeBundles);
         assert!(groups.iter().all(|g| g.procs.iter().all(|p| p.pid != 2)));
     }
 
     #[test]
     fn system_group_always_present() {
-        let s = snap(vec![proc(1, CHROME, Some(GB))], GB, 0);
+        let s = snap(vec![proc(1, CHROME, Some(GB))], GB);
         let groups = build_groups(&s, &mut FakeBundles);
         assert_eq!(groups.last().unwrap().key, Bucket::System);
     }
@@ -211,7 +240,7 @@ mod tests {
         let zed = proc(10, "/Applications/Zed.app/Contents/MacOS/zed", Some(GB));
         let mut ra = proc(11, "/Users/u/.cargo/bin/rust-analyzer", Some(GB));
         ra.responsible_pid = Some(10);
-        let groups = build_groups(&snap(vec![zed, ra], 2 * GB, 0), &mut FakeBundles);
+        let groups = build_groups(&snap(vec![zed, ra], 2 * GB), &mut FakeBundles);
         assert_eq!(groups[0].name, "Zed");
         assert_eq!(groups[0].procs.len(), 2);
     }
@@ -224,7 +253,7 @@ mod tests {
             "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator",
             Some(GB),
         );
-        let groups = build_groups(&snap(vec![cli, sim], 2 * GB, 0), &mut FakeBundles);
+        let groups = build_groups(&snap(vec![cli, sim], 2 * GB), &mut FakeBundles);
         let names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
         assert!(names.contains(&"Command-line tools"));
         let sim = groups.iter().find(|g| g.key == Bucket::Simulator).unwrap();

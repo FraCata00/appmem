@@ -40,6 +40,9 @@ pub struct SystemStats {
     pub used: u64,
     pub wired: u64,
     pub swap_used: u64,
+    /// App memory with compressed pages at their full size: the space process
+    /// footprints are measured in, used to estimate what couldn't be read.
+    pub app_footprint: u64,
     pub pressure: Pressure,
 }
 

@@ -164,6 +164,7 @@ mod tests {
             used: 7 * GB,
             wired: GB,
             swap_used: 2 * GB,
+            app_footprint: 0,
             pressure: Pressure::Warn,
         }
     }
