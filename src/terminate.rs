@@ -56,8 +56,10 @@ pub fn plan_terminate(proc: &ProcInfo, group: &Group, snap: &Snapshot) -> Result
 }
 
 pub fn plan_quit(group: &Group, snap: &Snapshot) -> Result<Action, String> {
-    if matches!(group.key, Bucket::CommandLine | Bucket::System) {
-        return Err(NOT_QUITTABLE.into());
+    match group.key {
+        Bucket::System => return Err(SYSTEM_REFUSAL.into()),
+        Bucket::CommandLine => return Err(NOT_QUITTABLE.into()),
+        Bucket::App(_) | Bucket::Simulator => {}
     }
     let protected = protected_pids(snap);
     if group.procs.iter().any(|p| protected.contains(&p.pid)) {
@@ -225,12 +227,15 @@ mod tests {
     }
 
     #[test]
-    fn quit_refused_for_command_line_and_system_groups() {
-        let snap = snapshot(chain());
-        for key in [Bucket::CommandLine, Bucket::System] {
-            let g = group(key, "x", None, vec![]);
-            assert_eq!(plan_quit(&g, &snap).unwrap_err(), "This group can't be quit as a whole");
-        }
+    fn quit_refused_for_command_line_group() {
+        let g = group(Bucket::CommandLine, "x", None, vec![]);
+        assert_eq!(plan_quit(&g, &snapshot(chain())).unwrap_err(), "This group can't be quit as a whole");
+    }
+
+    #[test]
+    fn quit_on_system_group_says_system() {
+        let g = group(Bucket::System, "System", None, vec![]);
+        assert_eq!(plan_quit(&g, &snapshot(chain())).unwrap_err(), "System processes can't be terminated");
     }
 
     #[test]

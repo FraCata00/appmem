@@ -37,8 +37,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    eprintln!("appmem: TUI not implemented yet, use --once");
-    ExitCode::FAILURE
+    match appmem::ui::run::run(&mut collector, args.interval) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("appmem: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn terminal_width() -> Option<usize> {

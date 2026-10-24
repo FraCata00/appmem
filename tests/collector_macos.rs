@@ -59,3 +59,16 @@ fn missing_bundle_falls_back_to_folder_name() {
     assert_eq!(meta.name, "My Tool");
     assert_eq!(meta.bundle_id, None);
 }
+
+#[test]
+fn terminates_real_child_process() {
+    use appmem::terminate::{Action, execute};
+    use std::os::unix::process::ExitStatusExt;
+
+    let mut child = Command::new("/bin/sleep").arg("600").spawn().unwrap();
+    let pid = child.id() as i32;
+    let action = Action::Terminate { pid, name: "sleep".into(), path: proc_path(pid), footprint: 0 };
+    execute(&action, proc_path).unwrap();
+    let status = child.wait().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGTERM));
+}
