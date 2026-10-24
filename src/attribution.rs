@@ -1,9 +1,11 @@
 //! Decides which app a process belongs to.
 //!
 //! Rules, in order (see the design spec):
-//! 1. Apple system paths go to System.
-//! 2. Simulator runtimes and Simulator.app go to Simulator.
-//! 3. The app of the responsible process, if it is an app or the Simulator.
+//! 1. Simulator runtimes and Simulator.app go to Simulator.
+//! 2. The app of the responsible process, if it is an app or the Simulator.
+//!    System processes are responsible for themselves, so they never land here.
+//! 3. Apple system paths go to System, except Apple's own apps in
+//!    `/System/Applications` (Safari, Notes…), which are apps like any other.
 //! 4. The outermost `.app` bundle in the executable path.
 //! 5. Other processes of the current user go to Command-line tools.
 //! 6. Everything else goes to System.
@@ -13,6 +15,8 @@ use std::path::{Component, Path, PathBuf};
 use crate::model::ProcInfo;
 
 const SYSTEM_PREFIXES: [&str; 5] = ["/System/", "/usr/", "/bin/", "/sbin/", "/Library/Apple/"];
+const APPLE_APP_DIRS: [&str; 2] =
+    ["/System/Applications/", "/System/Volumes/Preboot/Cryptexes/App/System/Applications/"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Bucket {
@@ -23,14 +27,15 @@ pub enum Bucket {
     System,
 }
 
-/// Rules 1, 2 and 4 applied to a single executable path.
+/// Simulator, system and bundle rules applied to a single executable path.
 pub fn classify_path(path: &Path) -> Option<Bucket> {
     let text = path.to_string_lossy();
-    if SYSTEM_PREFIXES.iter().any(|prefix| text.starts_with(prefix)) {
-        return Some(Bucket::System);
-    }
     if text.contains(".simruntime/") || text.contains("/CoreSimulator/") {
         return Some(Bucket::Simulator);
+    }
+    let apple_app = APPLE_APP_DIRS.iter().any(|dir| text.starts_with(dir));
+    if !apple_app && SYSTEM_PREFIXES.iter().any(|prefix| text.starts_with(prefix)) {
+        return Some(Bucket::System);
     }
 
     let mut outermost: Option<PathBuf> = None;
@@ -52,16 +57,16 @@ pub fn classify_path(path: &Path) -> Option<Bucket> {
 
 pub fn attribute(proc: &ProcInfo, responsible_path: Option<&Path>, current_uid: u32) -> Bucket {
     let own = proc.path.as_deref().and_then(classify_path);
-    if matches!(own, Some(Bucket::System | Bucket::Simulator)) {
-        return own.unwrap();
+    if own == Some(Bucket::Simulator) {
+        return Bucket::Simulator;
     }
     if let Some(responsible) = responsible_path.and_then(classify_path) {
         if matches!(responsible, Bucket::App(_) | Bucket::Simulator) {
             return responsible;
         }
     }
-    if let Some(app) = own {
-        return app;
+    if let Some(bucket) = own {
+        return bucket;
     }
     if proc.uid == current_uid {
         Bucket::CommandLine
@@ -132,10 +137,33 @@ mod tests {
     }
 
     #[test]
-    fn system_path_wins_over_responsible() {
+    fn system_daemon_responsible_for_itself_is_system() {
         let d = p("/usr/libexec/sharingd", 501);
-        let xcode = Path::new("/Applications/Xcode.app/Contents/MacOS/Xcode");
-        assert_eq!(attribute(&d, Some(xcode), 501), Bucket::System);
+        assert_eq!(attribute(&d, Some(Path::new("/usr/libexec/sharingd")), 501), Bucket::System);
+    }
+
+    #[test]
+    fn system_app_bundles_are_apps() {
+        let safari = p("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari", 501);
+        assert_eq!(
+            attribute(&safari, None, 501),
+            Bucket::App("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app".into())
+        );
+        let notes = p("/System/Applications/Notes.app/Contents/MacOS/Notes", 501);
+        assert_eq!(attribute(&notes, None, 501), Bucket::App("/System/Applications/Notes.app".into()));
+    }
+
+    #[test]
+    fn webkit_service_goes_to_responsible_app() {
+        let gpu = p(
+            "/System/Volumes/Preboot/Cryptexes/Incoming/OS/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU",
+            501,
+        );
+        let safari = Path::new("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari");
+        assert_eq!(
+            attribute(&gpu, Some(safari), 501),
+            Bucket::App("/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app".into())
+        );
     }
 
     #[test]

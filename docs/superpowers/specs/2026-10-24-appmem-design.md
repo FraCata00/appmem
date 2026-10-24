@@ -151,22 +151,26 @@ without `.app`.
 Attribution rules, applied in this order (decided by Claude after review;
 the author delegated these calls):
 
-1. **Apple system paths → "System".** Any process whose executable lives
-   under `/System/`, `/usr/`, `/bin/`, `/sbin/`, or `/Library/Apple/` goes to
-   "System", even if it is a user-owned `.app` (Finder, Dock, loginwindow,
-   ControlCenter, Spotlight…). This keeps the list short and keeps dangerous
-   processes out of reach of terminate.
-2. **Simulator runtimes → "Simulator".** Any process whose path contains
+1. **Simulator runtimes → "Simulator".** Any process whose path contains
    `.simruntime/` or `/CoreSimulator/`, plus `Simulator.app` itself, goes to a
    single "Simulator" row. Simulator is shown **separately from Xcode** (as in
    the mockup) even though `Simulator.app` lives inside `Xcode.app`: the user
    wants to see what the simulator costs on its own.
-3. **Responsible process, if available.** Use
+2. **Responsible process, if available.** Use
    `responsibility_get_pid_responsible_for_pid` (private libsystem API, looked
    up at runtime with `dlsym`; if missing, skip this step silently) and
-   attribute the process to the app of its responsible process. This is what
-   Activity Monitor does and catches XPC services launched by Xcode, etc.
-   Rules 1–2 still win over this step.
+   attribute the process to the app of its responsible process, when that is
+   an app or the Simulator. This is what Activity Monitor does and catches
+   XPC services launched by Xcode, Safari's WebKit processes, etc. System
+   daemons such as loginwindow or WindowServer are responsible for themselves,
+   so they never land in an app this way.
+3. **Apple system paths → "System".** Any process whose executable lives
+   under `/System/`, `/usr/`, `/bin/`, `/sbin/`, or `/Library/Apple/` goes to
+   "System" (Finder, Dock, loginwindow, ControlCenter, Spotlight…). This keeps
+   the list short and keeps dangerous processes out of reach of terminate.
+   **Exception:** Apple's own apps in `/System/Applications/` and
+   `/System/Volumes/Preboot/Cryptexes/App/System/Applications/` (Safari,
+   Notes, Mail…) are apps like any other and follow rule 4.
 4. **Outermost `.app` in the executable path** (fallback).
 5. **Anything else owned by the current user** (shell, CLI tools, `cargo`,
    `rust-analyzer` launched outside an app…) goes to a single
