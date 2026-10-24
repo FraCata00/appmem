@@ -1,0 +1,19 @@
+[package]
+name = "appmem"
+version = "0.1.0"
+edition = "2024"
+description = "See which macOS app is using your memory, grouped per app, in the terminal"
+license = "MIT"
+repository = "https://github.com/OWNER/appmem"
+readme = "README.md"
+
+[dependencies]
+libc = "0.2.191"
+plist = "1.10.3"
+ratatui = "0.30.2"
+unicode-width = "0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
