@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use appmem::args::{Parsed, USAGE, parse_args};
 use appmem::collector::{Collector, MacCollector, PlistBundles};
+use appmem::config::{Config, config_path};
 use appmem::grouping::build_groups;
 use appmem::report::render_report;
 
@@ -33,7 +34,8 @@ fn main() -> ExitCode {
         };
         let groups = build_groups(&snap, &mut PlistBundles::default());
         let width = terminal_width().unwrap_or(80);
-        print!("{}", render_report(&snap.stats, &groups, width));
+        let config = config_path().map(|p| Config::load(&p)).unwrap_or_default();
+        print!("{}", render_report(&snap.stats, &groups, &config, width));
         return ExitCode::SUCCESS;
     }
 

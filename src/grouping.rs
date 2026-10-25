@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::attribution::{Bucket, attribute};
+use crate::config::Config;
 use crate::model::{ProcInfo, Snapshot};
 
 pub struct AppMeta {
@@ -81,6 +82,29 @@ pub fn build_groups(snap: &Snapshot, bundles: &mut dyn BundleInfo) -> Vec<Group>
             .then(a.name.cmp(&b.name))
     });
     groups
+}
+
+/// Name a group's alert is saved under: the bundle id, which survives moving or
+/// renaming the app. `None` for System, which can't have an alert.
+pub fn alert_key(group: &Group) -> Option<String> {
+    match &group.key {
+        Bucket::System => None,
+        Bucket::CommandLine => Some("command-line-tools".to_string()),
+        Bucket::App(bundle) => Some(
+            group
+                .bundle_id
+                .clone()
+                .unwrap_or_else(|| bundle.to_string_lossy().into_owned()),
+        ),
+        Bucket::Simulator => group.bundle_id.clone(),
+    }
+}
+
+/// True when the group uses more memory than its saved alert.
+pub fn over_alert(group: &Group, config: &Config) -> bool {
+    alert_key(group)
+        .and_then(|key| config.alert(&key))
+        .is_some_and(|limit| group.total > limit)
 }
 
 fn new_group(key: Bucket, bundles: &mut dyn BundleInfo) -> Group {
@@ -259,5 +283,57 @@ mod tests {
         let sim = groups.iter().find(|g| g.key == Bucket::Simulator).unwrap();
         assert_eq!(sim.name, "Simulator");
         assert_eq!(sim.bundle_id.as_deref(), Some("com.apple.iphonesimulator"));
+    }
+
+    fn plain(key: Bucket, name: &str, bundle_id: Option<&str>, total: u64) -> Group {
+        Group {
+            key,
+            name: name.into(),
+            bundle_id: bundle_id.map(Into::into),
+            procs: vec![],
+            total,
+            estimated: false,
+        }
+    }
+
+    #[test]
+    fn alert_keys() {
+        let safari = plain(
+            Bucket::App("/Applications/Safari.app".into()),
+            "Safari",
+            Some("com.apple.Safari"),
+            0,
+        );
+        assert_eq!(alert_key(&safari).as_deref(), Some("com.apple.Safari"));
+        let no_id = plain(Bucket::App("/Applications/Tool.app".into()), "Tool", None, 0);
+        assert_eq!(alert_key(&no_id).as_deref(), Some("/Applications/Tool.app"));
+        let cli = plain(Bucket::CommandLine, "Command-line tools", None, 0);
+        assert_eq!(alert_key(&cli).as_deref(), Some("command-line-tools"));
+        let sim = plain(Bucket::Simulator, "Simulator", Some("com.apple.iphonesimulator"), 0);
+        assert_eq!(alert_key(&sim).as_deref(), Some("com.apple.iphonesimulator"));
+        assert_eq!(alert_key(&plain(Bucket::System, "System", None, 0)), None);
+    }
+
+    #[test]
+    fn over_alert_only_above_threshold() {
+        let mut config = crate::config::Config::default();
+        config.set_alert("com.apple.Safari", Some(2 * GB));
+        let at = plain(
+            Bucket::App("/Applications/Safari.app".into()),
+            "Safari",
+            Some("com.apple.Safari"),
+            2 * GB,
+        );
+        let above = Group {
+            total: 2 * GB + 1,
+            ..at.clone()
+        };
+        assert!(!over_alert(&at, &config));
+        assert!(over_alert(&above, &config));
+        let other = Group {
+            bundle_id: Some("x".into()),
+            ..above
+        };
+        assert!(!over_alert(&other, &config));
     }
 }

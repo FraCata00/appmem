@@ -1,6 +1,7 @@
 //! Terminal setup and the event loop.
 
 use std::io;
+use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
@@ -8,7 +9,9 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::collector::{Collector, PlistBundles, proc_path};
-use crate::grouping::{Group, build_groups};
+use crate::config::{Config, config_path};
+use crate::format::format_bytes;
+use crate::grouping::{Group, alert_key, build_groups};
 use crate::model::Snapshot;
 use crate::terminate::{Action, confirm_prompt, execute, plan_quit, plan_terminate, quit_result, start_quit};
 use crate::ui::render::{View, draw};
@@ -17,6 +20,14 @@ use crate::ui::state::{RowId, UiState};
 const STATUS_DURATION: Duration = Duration::from_secs(3);
 /// How often to check on a pending quit request.
 const QUIT_POLL: Duration = Duration::from_millis(200);
+const GIB: f64 = (1u64 << 30) as f64;
+
+/// The alert being typed in for an app.
+struct AlertEdit {
+    key: String,
+    name: String,
+    input: String,
+}
 
 struct App<'c> {
     collector: &'c mut dyn Collector,
@@ -27,6 +38,9 @@ struct App<'c> {
     pending: Option<Action>,
     /// An app we asked to quit, with osascript still waiting for its answer.
     quitting: Option<(String, Child)>,
+    editing: Option<AlertEdit>,
+    config: Config,
+    config_path: Option<PathBuf>,
     status: Option<(String, Instant)>,
     color: bool,
 }
@@ -44,6 +58,7 @@ pub fn run(collector: &mut dyn Collector, interval: Duration) -> io::Result<()> 
 impl<'c> App<'c> {
     fn new(collector: &'c mut dyn Collector) -> io::Result<App<'c>> {
         let snap = collector.snapshot()?;
+        let config_path = config_path();
         let mut app = App {
             collector,
             bundles: PlistBundles::default(),
@@ -52,6 +67,9 @@ impl<'c> App<'c> {
             state: UiState::default(),
             pending: None,
             quitting: None,
+            editing: None,
+            config: config_path.as_deref().map(Config::load).unwrap_or_default(),
+            config_path,
             status: None,
             color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
         };
@@ -76,6 +94,77 @@ impl<'c> App<'c> {
 
     fn set_status(&mut self, message: String) {
         self.status = Some((message, Instant::now()));
+    }
+
+    /// What the bottom line asks for, if anything.
+    fn prompt(&self) -> Option<String> {
+        if let Some(edit) = &self.editing {
+            return Some(format!("Alert when {} uses more than (GB): {}", edit.name, edit.input));
+        }
+        self.pending.as_ref().map(confirm_prompt)
+    }
+
+    fn start_alert_edit(&mut self) {
+        let Some(RowId::Group(key) | RowId::Proc(key, _)) = self.state.selected.as_ref() else {
+            return;
+        };
+        let Some(group) = self.groups.iter().find(|g| &g.key == key) else {
+            return;
+        };
+        match alert_key(group) {
+            Some(key) => {
+                self.editing = Some(AlertEdit {
+                    key,
+                    name: group.name.clone(),
+                    input: String::new(),
+                });
+            }
+            None => self.set_status("System can't have an alert".to_string()),
+        }
+    }
+
+    fn edit_alert_key(&mut self, code: KeyCode) {
+        let Some(edit) = self.editing.as_mut() else { return };
+        match code {
+            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == ',' => edit.input.push(c),
+            KeyCode::Backspace => {
+                edit.input.pop();
+            }
+            KeyCode::Esc => {
+                self.editing = None;
+                self.set_status("Cancelled".to_string());
+            }
+            KeyCode::Enter => {
+                let edit = self.editing.take().unwrap();
+                let message = self.save_alert(&edit);
+                self.set_status(message);
+            }
+            _ => {}
+        }
+    }
+
+    /// Applies a typed alert (empty or 0 removes it) and saves the config.
+    fn save_alert(&mut self, edit: &AlertEdit) -> String {
+        let text = edit.input.replace(',', ".");
+        let gb = if text.is_empty() {
+            0.0
+        } else {
+            text.parse::<f64>().unwrap_or(f64::NAN)
+        };
+        if !gb.is_finite() {
+            return format!("Not a number: {}", edit.input);
+        }
+        let bytes = (gb > 0.0).then(|| (gb * GIB).round() as u64);
+        self.config.set_alert(&edit.key, bytes);
+        if let Some(path) = &self.config_path
+            && let Err(err) = self.config.save(path)
+        {
+            return format!("Couldn't save {}: {err}", path.display());
+        }
+        match bytes {
+            Some(bytes) => format!("Alert for {} above {}", edit.name, format_bytes(bytes)),
+            None => format!("Alert for {} removed", edit.name),
+        }
     }
 
     /// Reports the outcome of a quit request once osascript has finished.
@@ -115,7 +204,7 @@ impl<'c> App<'c> {
             {
                 self.status = None;
             }
-            let prompt = self.pending.as_ref().map(confirm_prompt);
+            let prompt = self.prompt();
             terminal.draw(|frame| {
                 let view = View {
                     stats: &self.snap.stats,
@@ -123,6 +212,7 @@ impl<'c> App<'c> {
                     state: &self.state,
                     status: self.status.as_ref().map(|(m, _)| m.as_str()),
                     prompt: prompt.as_deref(),
+                    config: &self.config,
                     color: self.color,
                 };
                 draw(frame, &view);
@@ -153,6 +243,10 @@ impl<'c> App<'c> {
         if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
             return false;
         }
+        if self.editing.is_some() {
+            self.edit_alert_key(code);
+            return true;
+        }
         if let Some(action) = self.pending.take() {
             if matches!(code, KeyCode::Char('y' | 'Y')) {
                 match action {
@@ -182,6 +276,7 @@ impl<'c> App<'c> {
             KeyCode::Up => self.state.move_selection(&self.groups, -1),
             KeyCode::Down => self.state.move_selection(&self.groups, 1),
             KeyCode::Enter => self.state.toggle_expand(),
+            KeyCode::Char('t') => self.start_alert_edit(),
             KeyCode::Char('k') => match self.plan() {
                 Some(Ok(Action::Quit { .. })) if self.quitting.is_some() => {
                     let name = self.quitting.as_ref().map(|(n, _)| n.clone()).unwrap_or_default();
@@ -215,6 +310,7 @@ impl<'c> App<'c> {
 mod tests {
     use super::*;
     use crate::attribution::Bucket;
+    use crate::config::Config;
     use crate::model::{Pressure, ProcInfo, SystemStats};
 
     struct FakeCollector(Snapshot);
@@ -331,5 +427,90 @@ mod tests {
         assert!(!app.handle_key(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE));
+    }
+
+    fn with_temp_config(app: &mut App, name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("appmem-run-{}-{name}/config.toml", std::process::id()));
+        app.config = Config::default();
+        app.config_path = Some(path.clone());
+        path
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+    }
+
+    const FAKE_KEY: &str = "/nonexistent/Fake.app";
+
+    #[test]
+    fn t_then_number_saves_alert() {
+        let mut c = collector();
+        let mut app = App::new(&mut c).unwrap();
+        let path = with_temp_config(&mut app, "save");
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert_eq!(app.prompt().as_deref(), Some("Alert when Fake uses more than (GB): "));
+        type_text(&mut app, "1,5");
+        assert_eq!(
+            app.prompt().as_deref(),
+            Some("Alert when Fake uses more than (GB): 1,5")
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.config.alert(FAKE_KEY), Some(3 << 29));
+        assert_eq!(status(&app).as_deref(), Some("Alert for Fake above 1.50 GB"));
+        assert_eq!(Config::load(&path), app.config);
+        assert!(app.prompt().is_none());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn empty_value_removes_alert() {
+        let mut c = collector();
+        let mut app = App::new(&mut c).unwrap();
+        let path = with_temp_config(&mut app, "remove");
+        app.config.set_alert(FAKE_KEY, Some(1 << 30));
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.config.alert(FAKE_KEY), None);
+        assert_eq!(status(&app).as_deref(), Some("Alert for Fake removed"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn editing_ignores_letters_and_esc_cancels() {
+        let mut c = collector();
+        let mut app = App::new(&mut c).unwrap();
+        with_temp_config(&mut app, "cancel");
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        type_text(&mut app, "2xq");
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.prompt().as_deref(), Some("Alert when Fake uses more than (GB): "));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.prompt().is_none());
+        assert_eq!(app.config.alert(FAKE_KEY), None);
+        assert_eq!(status(&app).as_deref(), Some("Cancelled"));
+    }
+
+    #[test]
+    fn invalid_number_is_rejected() {
+        let mut c = collector();
+        let mut app = App::new(&mut c).unwrap();
+        with_temp_config(&mut app, "invalid");
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        type_text(&mut app, "..");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(status(&app).as_deref(), Some("Not a number: .."));
+        assert_eq!(app.config.alert(FAKE_KEY), None);
+    }
+
+    #[test]
+    fn t_on_system_is_refused() {
+        let mut c = collector();
+        let mut app = App::new(&mut c).unwrap();
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert!(app.prompt().is_none());
+        assert_eq!(status(&app).as_deref(), Some("System can't have an alert"));
     }
 }

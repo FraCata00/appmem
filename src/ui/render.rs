@@ -7,13 +7,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
+use crate::config::Config;
 use crate::format::{format_bytes, truncate_to_width};
 use crate::grouping::Group;
+use crate::grouping::{alert_key, over_alert};
 use crate::model::{Pressure, SystemStats};
 use crate::report::{BAR_WIDTH, MAX_NAME_WIDTH, bar, gb, pressure_word, total_label};
-use crate::ui::state::{Row, UiState};
+use crate::ui::state::{Row, RowId, UiState};
 
-pub const KEY_HELP: &str = "↑↓ move  ⏎ expand/collapse  k terminate  q quit";
+pub const KEY_HELP: &str = "↑↓ move  ⏎ expand/collapse  k terminate  t alert  q quit";
 /// Columns after the name: gap, count or pid, gap, total.
 const TAIL_COLUMNS: usize = 2 + 8 + 2 + 9;
 /// Below this width the bar is dropped so names stay readable.
@@ -25,6 +27,7 @@ pub struct View<'a> {
     pub state: &'a UiState,
     pub status: Option<&'a str>,
     pub prompt: Option<&'a str>,
+    pub config: &'a Config,
     pub color: bool,
 }
 
@@ -48,12 +51,16 @@ pub fn draw(frame: &mut Frame, view: &View) {
         .skip(offset)
         .take(height)
         .map(|(i, row)| {
-            let line = Line::from(row_text(row, view.stats.total, width));
-            if Some(i) == selected {
-                line.style(Style::new().add_modifier(Modifier::REVERSED))
-            } else {
-                line
+            let alert = matches!(row, Row::Group(group, _) if over_alert(group, view.config));
+            // Without colors, a leading `!` marks the app instead of red.
+            let mut style = Style::new();
+            if alert && view.color {
+                style = style.fg(Color::Red);
             }
+            if Some(i) == selected {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            Line::from(row_text(row, view.stats.total, width, alert && !view.color)).style(style)
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), list);
@@ -61,9 +68,21 @@ pub fn draw(frame: &mut Frame, view: &View) {
     let footer_line = match (view.prompt, view.status) {
         (Some(prompt), _) => Line::from(prompt).style(Style::new().add_modifier(Modifier::BOLD)),
         (None, Some(status)) => Line::from(status),
-        (None, None) => Line::from(KEY_HELP),
+        (None, None) => match selected_alert(view) {
+            Some(limit) => Line::from(format!("Alert above {}  {KEY_HELP}", format_bytes(limit))),
+            None => Line::from(KEY_HELP),
+        },
     };
     frame.render_widget(Paragraph::new(footer_line), footer);
+}
+
+/// The alert threshold of the app the selection is in, if it has one.
+fn selected_alert(view: &View) -> Option<u64> {
+    let key = match view.state.selected.as_ref()? {
+        RowId::Group(key) | RowId::Proc(key, _) => key,
+    };
+    let group = view.groups.iter().find(|g| &g.key == key)?;
+    view.config.alert(&alert_key(group)?)
 }
 
 fn header_line(view: &View) -> Line<'static> {
@@ -98,7 +117,7 @@ fn header_line(view: &View) -> Line<'static> {
     ])
 }
 
-fn row_text(row: &Row, total_memory: u64, width: usize) -> String {
+fn row_text(row: &Row, total_memory: u64, width: usize, mark_alert: bool) -> String {
     let with_bar = width >= BAR_MIN_WIDTH;
     let tail = if with_bar {
         TAIL_COLUMNS + 2 + BAR_WIDTH
@@ -111,7 +130,14 @@ fn row_text(row: &Row, total_memory: u64, width: usize) -> String {
             let mut text = format!(
                 "{} {}  {:>3} proc  {:>9}",
                 if *open { '▾' } else { '▸' },
-                pad(&group.name, name_width),
+                pad(
+                    &if mark_alert {
+                        format!("!{}", group.name)
+                    } else {
+                        group.name.clone()
+                    },
+                    name_width
+                ),
                 group.procs.len(),
                 total_label(group),
             );
@@ -149,10 +175,12 @@ fn pad(s: &str, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::attribution::Bucket;
+    use crate::config::Config;
     use crate::model::{Pressure, ProcInfo};
     use crate::ui::state::RowId;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use unicode_width::UnicodeWidthStr;
 
     const MB: u64 = 1024 * 1024;
@@ -203,6 +231,19 @@ mod tests {
     }
 
     fn screen(w: u16, h: u16, groups: &[Group], state: &UiState, prompt: Option<&str>) -> Vec<String> {
+        let config = Config::default();
+        render(w, h, groups, state, prompt, &config, true).0
+    }
+
+    fn render(
+        w: u16,
+        h: u16,
+        groups: &[Group],
+        state: &UiState,
+        prompt: Option<&str>,
+        config: &Config,
+        color: bool,
+    ) -> (Vec<String>, Buffer) {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let st = stats();
         let view = View {
@@ -211,11 +252,12 @@ mod tests {
             state,
             status: None,
             prompt,
-            color: true,
+            config,
+            color,
         };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buf = terminal.backend().buffer().clone();
-        (0..h)
+        let lines = (0..h)
             .map(|y| {
                 let mut line = String::new();
                 let mut x = 0;
@@ -227,7 +269,16 @@ mod tests {
                 }
                 line.trim_end().to_string()
             })
-            .collect()
+            .collect();
+        (lines, buf)
+    }
+
+    fn safari_alert(limit: u64) -> (Vec<Group>, Config) {
+        let mut safari = group("Safari", 3, 3 * GB);
+        safari.bundle_id = Some("com.apple.Safari".into());
+        let mut config = Config::default();
+        config.set_alert("com.apple.Safari", Some(limit));
+        (vec![safari, group("Xcode", 1, GB)], config)
     }
 
     fn selected(groups: &[Group]) -> UiState {
@@ -304,5 +355,38 @@ mod tests {
         let row = &lines[1];
         let col = row[..row.find(" proc").unwrap()].width();
         assert_eq!(col, 2 + crate::report::MAX_NAME_WIDTH + 5, "{row}");
+    }
+
+    #[test]
+    fn row_over_alert_is_red() {
+        let (groups, config) = safari_alert(2 * GB);
+        let mut state = selected(&groups);
+        state.move_selection(&groups, 1);
+        let (_, buf) = render(80, 10, &groups, &state, None, &config, true);
+        assert_eq!(buf[(2, 1)].fg, Color::Red);
+        assert_ne!(buf[(2, 2)].fg, Color::Red);
+    }
+
+    #[test]
+    fn row_under_alert_is_plain() {
+        let (groups, config) = safari_alert(4 * GB);
+        let (_, buf) = render(80, 10, &groups, &UiState::default(), None, &config, true);
+        assert_ne!(buf[(2, 1)].fg, Color::Red);
+    }
+
+    #[test]
+    fn no_color_marks_alert_with_bang() {
+        let (groups, config) = safari_alert(2 * GB);
+        let (lines, _) = render(80, 10, &groups, &selected(&groups), None, &config, false);
+        assert!(lines[1].starts_with("▸ !Safari"), "{}", lines[1]);
+        assert!(lines[2].starts_with("▸ Xcode"));
+    }
+
+    #[test]
+    fn footer_shows_alert_of_selected_app() {
+        let (groups, config) = safari_alert(2 * GB);
+        let (lines, _) = render(80, 10, &groups, &selected(&groups), None, &config, true);
+        assert!(lines[9].starts_with("Alert above 2.00 GB  "), "{}", lines[9]);
+        assert!(lines[9].contains("t alert"));
     }
 }

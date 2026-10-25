@@ -70,9 +70,27 @@ appmem --once          # print the per-app table once and exit
 | ↑ ↓ | Move |
 | Enter | Expand or collapse an app |
 | k | On an app: quit it (like Cmd-Q). On a process: terminate it (SIGTERM). Always asks first. |
+| t | Set a memory alert for the selected app |
 | q, Esc, Ctrl-C | Exit |
 
 Set `NO_COLOR=1` to turn colors off.
+
+## Memory alerts
+
+Select an app, press `t` and type a limit in GB, for example `2` or `1.5`.
+When the app uses more than that, its row turns red (with `NO_COLOR` or in
+`--once`, its name gets a leading `!`). Press `t` and Enter on an empty value
+to remove the alert.
+
+Alerts are saved in `~/.config/appmem/config.toml` (or
+`$XDG_CONFIG_HOME/appmem/config.toml`), keyed by the app's bundle id, so they
+survive renaming or moving the app. You can also edit the file by hand:
+
+```toml
+[alerts]
+"com.apple.Safari" = 2
+"com.google.Chrome" = 1.5
+```
 
 ## How memory is measured
 

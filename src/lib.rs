@@ -1,6 +1,7 @@
 pub mod args;
 pub mod attribution;
 pub mod collector;
+pub mod config;
 pub mod format;
 pub mod grouping;
 pub mod model;

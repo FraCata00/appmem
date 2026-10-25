@@ -2,8 +2,9 @@
 
 use std::fmt::Write;
 
+use crate::config::Config;
 use crate::format::{format_bytes, truncate_to_width};
-use crate::grouping::Group;
+use crate::grouping::{Group, over_alert};
 use crate::model::{Pressure, SystemStats};
 
 pub const BAR_WIDTH: usize = 13;
@@ -42,7 +43,7 @@ pub fn total_label(group: &Group) -> String {
     format!("{prefix}{}", format_bytes(group.total))
 }
 
-pub fn render_report(stats: &SystemStats, groups: &[Group], width: usize) -> String {
+pub fn render_report(stats: &SystemStats, groups: &[Group], config: &Config, width: usize) -> String {
     let mut out = format!(
         "Memory {}/{} GB (wired {})  Pressure {}  Swap {} GB\n",
         gb(stats.used),
@@ -53,7 +54,13 @@ pub fn render_report(stats: &SystemStats, groups: &[Group], width: usize) -> Str
     );
     let name_width = width.saturating_sub(FIXED_COLUMNS).clamp(8, MAX_NAME_WIDTH);
     for group in groups {
-        let name = truncate_to_width(&group.name, name_width);
+        // `!` marks apps above their alert; --once has no colors.
+        let label = if over_alert(group, config) {
+            format!("!{}", group.name)
+        } else {
+            group.name.clone()
+        };
+        let name = truncate_to_width(&label, name_width);
         let pad = name_width - unicode_width::UnicodeWidthStr::width(name.as_str());
         let _ = writeln!(
             out,
@@ -71,6 +78,7 @@ pub fn render_report(stats: &SystemStats, groups: &[Group], width: usize) -> Str
 mod tests {
     use super::*;
     use crate::attribution::Bucket;
+    use crate::config::Config;
     use crate::model::{Pressure, SystemStats};
 
     const GB: u64 = 1024 * 1024 * 1024;
@@ -105,7 +113,7 @@ mod tests {
             ),
             group(Bucket::System, "System", GB, true),
         ];
-        let out = render_report(&stats, &groups, 80);
+        let out = render_report(&stats, &groups, &Config::default(), 80);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(
             lines[0],
@@ -133,7 +141,7 @@ mod tests {
             3 * GB,
             false,
         )];
-        let out = render_report(&stats, &groups, 250);
+        let out = render_report(&stats, &groups, &Config::default(), 250);
         let row = out.lines().nth(1).unwrap();
         assert_eq!(row.find(" proc").unwrap(), MAX_NAME_WIDTH + 5, "{row}");
     }
@@ -141,5 +149,23 @@ mod tests {
     #[test]
     fn bars_use_thin_line_glyphs() {
         assert_eq!(bar(1, 2, 4), "━━──");
+    }
+
+    #[test]
+    fn marks_apps_over_their_alert() {
+        let stats = SystemStats {
+            total: 8 * GB,
+            used: 6 * GB,
+            wired: GB,
+            swap_used: 0,
+            app_footprint: 0,
+            pressure: Pressure::Normal,
+        };
+        let mut safari = group(Bucket::App("/Applications/Safari.app".into()), "Safari", 3 * GB, false);
+        safari.bundle_id = Some("com.apple.Safari".into());
+        let mut config = Config::default();
+        config.set_alert("com.apple.Safari", Some(2 * GB));
+        let out = render_report(&stats, &[safari], &config, 80);
+        assert!(out.lines().nth(1).unwrap().starts_with("!Safari"));
     }
 }
