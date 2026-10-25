@@ -10,7 +10,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 
 use crate::collector::{Collector, PlistBundles, proc_path};
 use crate::config::{Config, config_path};
-use crate::format::{format_bytes, gb_to_bytes};
+use crate::format::{format_bytes, gb_to_bytes, seconds};
 use crate::grouping::{Group, alert_key, build_groups};
 use crate::model::Snapshot;
 use crate::terminate::{Action, confirm_prompt, plan_quit, plan_terminate, quit_result, start_quit, terminate};
@@ -21,6 +21,24 @@ const STATUS_DURATION: Duration = Duration::from_secs(3);
 /// How often to check on a pending quit request.
 const QUIT_POLL: Duration = Duration::from_millis(200);
 const CANCELLED: &str = "Cancelled";
+/// The refresh intervals `+` and `-` step through, fastest first.
+const INTERVALS: [Duration; 5] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+];
+
+/// The next preset faster or slower than `current`, or `current` past the ends.
+fn step_interval(current: Duration, faster: bool) -> Duration {
+    let next = if faster {
+        INTERVALS.iter().rev().find(|&&d| d < current)
+    } else {
+        INTERVALS.iter().find(|&&d| d > current)
+    };
+    next.copied().unwrap_or(current)
+}
 
 /// What the keyboard is driving right now.
 enum Mode {
@@ -51,20 +69,22 @@ struct App<'c> {
     config_path: Option<PathBuf>,
     status: Option<(String, Instant)>,
     color: bool,
+    interval: Duration,
+    next_refresh: Instant,
 }
 
 /// Runs the interactive view until the user quits. Restores the terminal on exit and on panic.
 pub fn run(collector: &mut dyn Collector, interval: Duration) -> io::Result<()> {
-    let mut app = App::new(collector)?;
+    let mut app = App::new(collector, interval)?;
     // ratatui::init also installs a panic hook that restores the terminal.
     let mut terminal = ratatui::init();
-    let result = app.event_loop(&mut terminal, interval);
+    let result = app.event_loop(&mut terminal);
     ratatui::restore();
     result
 }
 
 impl<'c> App<'c> {
-    fn new(collector: &'c mut dyn Collector) -> io::Result<App<'c>> {
+    fn new(collector: &'c mut dyn Collector, interval: Duration) -> io::Result<App<'c>> {
         let snap = collector.snapshot()?;
         let config_path = config_path();
         let mut app = App {
@@ -79,6 +99,8 @@ impl<'c> App<'c> {
             config_path,
             status: None,
             color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
+            interval,
+            next_refresh: Instant::now() + interval,
         };
         app.regroup();
         Ok(app)
@@ -185,8 +207,7 @@ impl<'c> App<'c> {
         }
     }
 
-    fn event_loop(&mut self, terminal: &mut DefaultTerminal, interval: Duration) -> io::Result<()> {
-        let mut next_refresh = Instant::now() + interval;
+    fn event_loop(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         loop {
             self.poll_quit();
             if self
@@ -207,11 +228,13 @@ impl<'c> App<'c> {
                     prompt: prompt.as_deref(),
                     config: &self.config,
                     color: self.color,
+                    interval: self.interval,
                 };
                 draw(frame, &view);
             })?;
 
-            let mut timeout = next_refresh
+            let mut timeout = self
+                .next_refresh
                 .saturating_duration_since(Instant::now())
                 .min(STATUS_DURATION);
             if self.quitting.is_some() {
@@ -224,9 +247,9 @@ impl<'c> App<'c> {
             {
                 return Ok(());
             }
-            if Instant::now() >= next_refresh {
+            if Instant::now() >= self.next_refresh {
                 self.refresh();
-                next_refresh = Instant::now() + interval;
+                self.next_refresh = Instant::now() + self.interval;
             }
         }
     }
@@ -267,6 +290,9 @@ impl<'c> App<'c> {
             KeyCode::Down => self.state.move_selection(&self.groups, 1),
             KeyCode::Enter => self.state.toggle_expand(),
             KeyCode::Char('t') => self.start_alert_edit(),
+            // `=` is `+` without Shift on most layouts.
+            KeyCode::Char('+' | '=') => self.change_interval(true),
+            KeyCode::Char('-') => self.change_interval(false),
             KeyCode::Char('k') => match self.plan() {
                 // One quit at a time: the first one is still waiting for its app.
                 Some(Ok(Action::Quit { .. })) if self.quitting.is_some() => {}
@@ -277,6 +303,13 @@ impl<'c> App<'c> {
             _ => {}
         }
         true
+    }
+
+    fn change_interval(&mut self, faster: bool) {
+        self.interval = step_interval(self.interval, faster);
+        // A faster pace shouldn't wait out the old, longer interval.
+        self.next_refresh = self.next_refresh.min(Instant::now() + self.interval);
+        self.set_status(format!("Refreshing every {}", seconds(self.interval)));
     }
 
     fn confirm(&mut self, action: Action) {
@@ -362,7 +395,7 @@ mod tests {
     #[test]
     fn k_on_system_shows_refusal() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         app.handle_key(KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(app.state.selected, Some(RowId::Group(Bucket::System)));
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
@@ -373,7 +406,7 @@ mod tests {
     #[test]
     fn k_on_process_asks_then_cancels() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         app.handle_key(KeyCode::Down, KeyModifiers::NONE);
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
@@ -387,7 +420,7 @@ mod tests {
     #[test]
     fn k_on_app_without_bundle_id_is_refused() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         // The fake bundle has no Info.plist, so there is no bundle id to quit by.
         assert!(matches!(app.mode, Mode::Browse));
@@ -397,7 +430,7 @@ mod tests {
     #[test]
     fn confirmed_quit_does_not_block_the_ui() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         app.mode = Mode::Confirm(Action::Quit {
             name: "Fake".into(),
             bundle_id: "invalid.appmem.test".into(),
@@ -424,7 +457,7 @@ mod tests {
     #[test]
     fn q_esc_and_ctrl_c_quit() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         assert!(!app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE));
         assert!(!app.handle_key(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -449,7 +482,7 @@ mod tests {
     #[test]
     fn t_then_number_saves_alert() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         let path = with_temp_config(&mut app, "save");
         app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
         assert_eq!(app.prompt().as_deref(), Some("Alert when Fake uses more than (GB): "));
@@ -469,7 +502,7 @@ mod tests {
     #[test]
     fn empty_value_removes_alert() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         let path = with_temp_config(&mut app, "remove");
         app.config.set_alert(FAKE_KEY, Some(1 << 30));
         app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
@@ -482,7 +515,7 @@ mod tests {
     #[test]
     fn editing_ignores_letters_and_esc_cancels() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         with_temp_config(&mut app, "cancel");
         app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
         type_text(&mut app, "2xq");
@@ -497,7 +530,7 @@ mod tests {
     #[test]
     fn invalid_number_is_rejected() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         with_temp_config(&mut app, "invalid");
         app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
         type_text(&mut app, "..");
@@ -509,10 +542,68 @@ mod tests {
     #[test]
     fn t_on_system_is_refused() {
         let mut c = collector();
-        let mut app = App::new(&mut c).unwrap();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
         app.handle_key(KeyCode::Down, KeyModifiers::NONE);
         app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
         assert!(app.prompt().is_none());
         assert_eq!(status(&app).as_deref(), Some("System can't have an alert"));
+    }
+
+    fn secs(s: f64) -> Duration {
+        Duration::from_secs_f64(s)
+    }
+
+    #[test]
+    fn steps_through_presets() {
+        assert_eq!(step_interval(secs(2.0), true), secs(1.0));
+        assert_eq!(step_interval(secs(1.0), true), secs(0.5));
+        assert_eq!(step_interval(secs(2.0), false), secs(5.0));
+        assert_eq!(step_interval(secs(5.0), false), secs(10.0));
+    }
+
+    #[test]
+    fn stops_at_the_ends() {
+        assert_eq!(step_interval(secs(0.5), true), secs(0.5));
+        assert_eq!(step_interval(secs(10.0), false), secs(10.0));
+        assert_eq!(step_interval(secs(30.0), false), secs(30.0));
+    }
+
+    #[test]
+    fn custom_interval_moves_to_nearest_preset() {
+        assert_eq!(step_interval(secs(3.0), true), secs(2.0));
+        assert_eq!(step_interval(secs(3.0), false), secs(5.0));
+        assert_eq!(step_interval(secs(30.0), true), secs(10.0));
+    }
+
+    #[test]
+    fn plus_and_minus_change_the_interval() {
+        let mut c = collector();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
+        app.handle_key(KeyCode::Char('+'), KeyModifiers::NONE);
+        assert_eq!(app.interval, secs(1.0));
+        assert_eq!(status(&app).as_deref(), Some("Refreshing every 1s"));
+        app.handle_key(KeyCode::Char('='), KeyModifiers::NONE);
+        assert_eq!(app.interval, secs(0.5));
+        app.handle_key(KeyCode::Char('-'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('-'), KeyModifiers::NONE);
+        assert_eq!(app.interval, secs(2.0));
+        assert_eq!(status(&app).as_deref(), Some("Refreshing every 2s"));
+    }
+
+    #[test]
+    fn faster_interval_brings_the_next_refresh_forward() {
+        let mut c = collector();
+        let mut app = App::new(&mut c, Duration::from_secs(10)).unwrap();
+        app.handle_key(KeyCode::Char('+'), KeyModifiers::NONE);
+        assert!(app.next_refresh <= Instant::now() + secs(5.0));
+    }
+
+    #[test]
+    fn plus_while_editing_an_alert_is_ignored() {
+        let mut c = collector();
+        let mut app = App::new(&mut c, Duration::from_secs(2)).unwrap();
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('+'), KeyModifiers::NONE);
+        assert_eq!(app.interval, secs(2.0));
     }
 }

@@ -10,7 +10,7 @@ processes, and quit the app or terminate a process without leaving the
 keyboard.
 
 ```
-Memory 6.90/8.00 GB (wired 1.40)  Pressure ■■■■■□□□ warn  Swap 2.10 GB
+Memory 6.90/8.00 GB (wired 1.40)  Pressure ■■■■■□□□ warn  Swap 2.10 GB  ↻ 2s
 ▾ Google Chrome          42 proc    3.12 GB  ━━━━━────────
     Google Chrome Helper (Renderer)     812     820 MB
     Google Chrome Helper (Renderer)     907     610 MB
@@ -19,7 +19,7 @@ Memory 6.90/8.00 GB (wired 1.40)  Pressure ■■■■■□□□ warn  Swap 2
 ▸ Xcode                  11 proc    2.41 GB  ━━━━─────────
 ▸ Simulator               6 proc     901 MB  ━────────────
 ▸ System                412 proc   ~1.10 GB  ━━───────────
-↑↓ move  ⏎ expand/collapse  k terminate  t alert  q quit
+↑↓ move  ⏎ expand  k terminate  t alert  +/- speed  q quit
 ```
 
 It is small on purpose: about 4 MB of memory and no measurable CPU while
@@ -61,7 +61,7 @@ cargo install appmem
 
 ```sh
 appmem                 # interactive view, refreshes every 2 seconds
-appmem --interval 5    # refresh every 5 seconds (minimum 0.5)
+appmem --interval 5    # start refreshing every 5 seconds (minimum 0.5)
 appmem --once          # print the per-app table once and exit
 ```
 
@@ -71,6 +71,7 @@ appmem --once          # print the per-app table once and exit
 | Enter | Expand or collapse an app |
 | k | On an app: quit it (like Cmd-Q). On a process: terminate it (SIGTERM). Always asks first. |
 | t | Set a memory alert for the selected app |
+| + / - | Refresh faster or slower (0.5, 1, 2, 5 or 10 seconds) |
 | q, Esc, Ctrl-C | Exit |
 
 Set `NO_COLOR=1` to turn colors off.

@@ -1,5 +1,7 @@
 //! Draws the header, the tree list and the status line.
 
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -8,12 +10,12 @@ use ratatui::widgets::Paragraph;
 
 use crate::columns::{alert_label, group_columns, memory_text, name_width, pressure_word, swap_text};
 use crate::config::Config;
-use crate::format::{format_bytes, pad};
+use crate::format::{format_bytes, pad, seconds};
 use crate::grouping::{Group, alert_key, over_alert};
 use crate::model::{Pressure, SystemStats};
 use crate::ui::state::{Row, UiState};
 
-pub const KEY_HELP: &str = "↑↓ move  ⏎ expand/collapse  k terminate  t alert  q quit";
+pub const KEY_HELP: &str = "↑↓ move  ⏎ expand  k terminate  t alert  +/- speed  q quit";
 /// Below this width the bar is dropped so names stay readable.
 const BAR_MIN_WIDTH: usize = 60;
 
@@ -25,6 +27,7 @@ pub struct View<'a> {
     pub prompt: Option<&'a str>,
     pub config: &'a Config,
     pub color: bool,
+    pub interval: Duration,
 }
 
 pub fn draw(frame: &mut Frame, view: &View) {
@@ -100,6 +103,7 @@ fn header_line(view: &View) -> Line<'static> {
         Span::raw(memory_text(stats)),
         Span::styled(meter, style),
         Span::raw(swap_text(stats)),
+        Span::raw(format!("  ↻ {}", seconds(view.interval))),
     ])
 }
 
@@ -214,6 +218,7 @@ mod tests {
             prompt,
             config,
             color,
+            interval: std::time::Duration::from_secs(2),
         };
         terminal.draw(|f| draw(f, &view)).unwrap();
         let buf = terminal.backend().buffer().clone();
@@ -348,5 +353,12 @@ mod tests {
         let (lines, _) = render(80, 10, &groups, &selected(&groups), None, &config, true);
         assert!(lines[9].starts_with("Alert above 2.00 GB  "), "{}", lines[9]);
         assert!(lines[9].contains("t alert"));
+    }
+
+    #[test]
+    fn header_shows_refresh_interval() {
+        let groups = vec![group("Safari", 1, GB)];
+        let lines = screen(80, 5, &groups, &selected(&groups), None);
+        assert!(lines[0].ends_with("Swap 2.00 GB  ↻ 2s"), "{}", lines[0]);
     }
 }

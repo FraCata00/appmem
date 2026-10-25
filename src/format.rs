@@ -65,6 +65,12 @@ pub fn truncate_to_width(s: &str, width: usize) -> String {
     out
 }
 
+/// A duration as seconds, without trailing zeros: "2s", "0.5s".
+pub fn seconds(d: std::time::Duration) -> String {
+    let text = format!("{:.2}", d.as_secs_f64());
+    format!("{}s", text.trim_end_matches('0').trim_end_matches('.'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +116,13 @@ mod tests {
         assert_eq!(gb_to_bytes(0.0), None);
         assert_eq!(gb_to_bytes(-1.0), None);
         assert_eq!(gb_to_bytes(f64::NAN), None);
+    }
+
+    #[test]
+    fn formats_seconds() {
+        use std::time::Duration;
+        assert_eq!(seconds(Duration::from_secs(2)), "2s");
+        assert_eq!(seconds(Duration::from_millis(500)), "0.5s");
+        assert_eq!(seconds(Duration::from_secs_f64(1.333333)), "1.33s");
     }
 }
