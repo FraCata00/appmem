@@ -11,14 +11,14 @@ keyboard.
 
 ```
 Memory 6.90/8.00 GB (wired 1.40)  Pressure ■■■■■□□□ warn  Swap 2.10 GB
-▾ Google Chrome          42 proc    3.12 GB  █████░░░░░░░░
+▾ Google Chrome          42 proc    3.12 GB  ━━━━━────────
     Google Chrome Helper (Renderer)     812     820 MB
     Google Chrome Helper (Renderer)     907     610 MB
     Google Chrome Helper (GPU)          401     402 MB
     … 39 more                                  1.29 GB
-▸ Xcode                  11 proc    2.41 GB  ████░░░░░░░░░
-▸ Simulator               6 proc     901 MB  █░░░░░░░░░░░░
-▸ System                412 proc   ~1.10 GB  ██░░░░░░░░░░░
+▸ Xcode                  11 proc    2.41 GB  ━━━━─────────
+▸ Simulator               6 proc     901 MB  ━────────────
+▸ System                412 proc   ~1.10 GB  ━━───────────
 ↑↓ move  ⏎ expand/collapse  k terminate  q quit
 ```
 

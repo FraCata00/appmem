@@ -7,6 +7,8 @@ use crate::grouping::Group;
 use crate::model::{Pressure, SystemStats};
 
 pub const BAR_WIDTH: usize = 13;
+/// Widest the name column gets, so totals stay next to names on wide terminals.
+pub const MAX_NAME_WIDTH: usize = 40;
 /// Columns used by everything except the name: gaps, process count, total and bar.
 const FIXED_COLUMNS: usize = 2 + 3 + 5 + 2 + 9 + 2 + BAR_WIDTH;
 
@@ -23,7 +25,7 @@ pub fn gb(bytes: u64) -> String {
     format!("{:.2}", bytes as f64 / (1u64 << 30) as f64)
 }
 
-/// `█`/`░` bar of `width` cells for `value` out of `max`.
+/// `━`/`─` bar of `width` cells (thin glyphs, so bars on adjacent lines stay apart) for `value` out of `max`.
 pub fn bar(value: u64, max: u64, width: usize) -> String {
     let filled = if max == 0 {
         0
@@ -31,7 +33,7 @@ pub fn bar(value: u64, max: u64, width: usize) -> String {
         ((value as f64 / max as f64) * width as f64).round() as usize
     };
     let filled = filled.min(width);
-    format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+    format!("{}{}", "━".repeat(filled), "─".repeat(width - filled))
 }
 
 /// Total with a `~` prefix when it includes an estimate.
@@ -49,7 +51,7 @@ pub fn render_report(stats: &SystemStats, groups: &[Group], width: usize) -> Str
         pressure_word(stats.pressure),
         gb(stats.swap_used)
     );
-    let name_width = width.saturating_sub(FIXED_COLUMNS).max(8);
+    let name_width = width.saturating_sub(FIXED_COLUMNS).clamp(8, MAX_NAME_WIDTH);
     for group in groups {
         let name = truncate_to_width(&group.name, name_width);
         let pad = name_width - unicode_width::UnicodeWidthStr::width(name.as_str());
@@ -113,5 +115,31 @@ mod tests {
         assert!(lines.last().unwrap().starts_with("System"));
         assert!(lines.last().unwrap().contains("~1.00 GB"));
         assert!(out.lines().all(|l| unicode_width::UnicodeWidthStr::width(l) <= 80));
+    }
+
+    #[test]
+    fn caps_name_column_on_wide_terminals() {
+        let stats = SystemStats {
+            total: 8 * GB,
+            used: 6 * GB,
+            wired: GB,
+            swap_used: 0,
+            app_footprint: 0,
+            pressure: Pressure::Normal,
+        };
+        let groups = vec![group(
+            Bucket::App("/Applications/Safari.app".into()),
+            "Safari",
+            3 * GB,
+            false,
+        )];
+        let out = render_report(&stats, &groups, 250);
+        let row = out.lines().nth(1).unwrap();
+        assert_eq!(row.find(" proc").unwrap(), MAX_NAME_WIDTH + 5, "{row}");
+    }
+
+    #[test]
+    fn bars_use_thin_line_glyphs() {
+        assert_eq!(bar(1, 2, 4), "━━──");
     }
 }

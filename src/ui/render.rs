@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::format::{format_bytes, truncate_to_width};
 use crate::grouping::Group;
 use crate::model::{Pressure, SystemStats};
-use crate::report::{BAR_WIDTH, bar, gb, pressure_word, total_label};
+use crate::report::{BAR_WIDTH, MAX_NAME_WIDTH, bar, gb, pressure_word, total_label};
 use crate::ui::state::{Row, UiState};
 
 pub const KEY_HELP: &str = "↑↓ move  ⏎ expand/collapse  k terminate  q quit";
@@ -105,7 +105,7 @@ fn row_text(row: &Row, total_memory: u64, width: usize) -> String {
     } else {
         TAIL_COLUMNS
     };
-    let name_width = width.saturating_sub(2 + tail).max(4);
+    let name_width = width.saturating_sub(2 + tail).clamp(4, MAX_NAME_WIDTH);
     match row {
         Row::Group(group, open) => {
             let mut text = format!(
@@ -295,5 +295,14 @@ mod tests {
         let groups = vec![group("Google Chrome", 1, GB)];
         let lines = screen(80, 24, &groups, &selected(&groups), Some("Quit Google Chrome? y/N"));
         assert_eq!(lines[23], "Quit Google Chrome? y/N");
+    }
+
+    #[test]
+    fn caps_name_column_on_wide_terminals() {
+        let groups = vec![group("Safari", 1, 3 * GB)];
+        let lines = screen(250, 10, &groups, &selected(&groups), None);
+        let row = &lines[1];
+        let col = row[..row.find(" proc").unwrap()].width();
+        assert_eq!(col, 2 + crate::report::MAX_NAME_WIDTH + 5, "{row}");
     }
 }
