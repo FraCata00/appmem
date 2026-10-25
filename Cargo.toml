@@ -7,6 +7,7 @@ license = "MIT"
 repository = "https://github.com/FraCata00/appmem"
 readme = "README.md"
 keywords = ["macos", "memory", "tui", "activity-monitor", "process"]
+exclude = ["/docs", "/.github"]
 categories = ["command-line-utilities", "os::macos-apis"]
 
 [dependencies]
