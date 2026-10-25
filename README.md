@@ -36,13 +36,13 @@ Download the latest build from the
 terminal:
 
 ```sh
-curl -LO https://github.com/FraCata00/appmem/releases/download/v0.1.0/appmem-v0.1.0-aarch64-apple-darwin.tar.gz
-tar -xzf appmem-v0.1.0-aarch64-apple-darwin.tar.gz
-sudo mv appmem-v0.1.0-aarch64-apple-darwin/appmem /usr/local/bin/
+curl -LO https://github.com/FraCata00/appmem/releases/download/v0.1.1/appmem-v0.1.1-aarch64-apple-darwin.tar.gz
+tar -xzf appmem-v0.1.1-aarch64-apple-darwin.tar.gz
+sudo mv appmem-v0.1.1-aarch64-apple-darwin/appmem /usr/local/bin/
 ```
 
 Each release also has a `.sha256` file; check the download with
-`shasum -a 256 -c appmem-v0.1.0-aarch64-apple-darwin.tar.gz.sha256`.
+`shasum -a 256 -c appmem-v0.1.1-aarch64-apple-darwin.tar.gz.sha256`.
 
 The binary is not notarized. Downloading it with `curl`, as above, avoids
 Gatekeeper's quarantine flag. If you download it with a browser instead, run
