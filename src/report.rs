@@ -2,74 +2,23 @@
 
 use std::fmt::Write;
 
+use crate::columns::{alert_label, group_columns, memory_text, name_width, pressure_word, swap_text};
 use crate::config::Config;
-use crate::format::{format_bytes, truncate_to_width};
 use crate::grouping::{Group, over_alert};
-use crate::model::{Pressure, SystemStats};
-
-pub const BAR_WIDTH: usize = 13;
-/// Widest the name column gets, so totals stay next to names on wide terminals.
-pub const MAX_NAME_WIDTH: usize = 40;
-/// Columns used by everything except the name: gaps, process count, total and bar.
-const FIXED_COLUMNS: usize = 2 + 3 + 5 + 2 + 9 + 2 + BAR_WIDTH;
-
-pub fn pressure_word(pressure: Pressure) -> &'static str {
-    match pressure {
-        Pressure::Normal => "normal",
-        Pressure::Warn => "warn",
-        Pressure::Critical => "critical",
-    }
-}
-
-/// "6.90/8.00" style pair, both in GB with two decimals.
-pub fn gb(bytes: u64) -> String {
-    format!("{:.2}", bytes as f64 / (1u64 << 30) as f64)
-}
-
-/// `━`/`─` bar of `width` cells (thin glyphs, so bars on adjacent lines stay apart) for `value` out of `max`.
-pub fn bar(value: u64, max: u64, width: usize) -> String {
-    let filled = if max == 0 {
-        0
-    } else {
-        ((value as f64 / max as f64) * width as f64).round() as usize
-    };
-    let filled = filled.min(width);
-    format!("{}{}", "━".repeat(filled), "─".repeat(width - filled))
-}
-
-/// Total with a `~` prefix when it includes an estimate.
-pub fn total_label(group: &Group) -> String {
-    let prefix = if group.estimated { "~" } else { "" };
-    format!("{prefix}{}", format_bytes(group.total))
-}
+use crate::model::SystemStats;
 
 pub fn render_report(stats: &SystemStats, groups: &[Group], config: &Config, width: usize) -> String {
     let mut out = format!(
-        "Memory {}/{} GB (wired {})  Pressure {}  Swap {} GB\n",
-        gb(stats.used),
-        gb(stats.total),
-        gb(stats.wired),
+        "{}{}{}\n",
+        memory_text(stats),
         pressure_word(stats.pressure),
-        gb(stats.swap_used)
+        swap_text(stats)
     );
-    let name_width = width.saturating_sub(FIXED_COLUMNS).clamp(8, MAX_NAME_WIDTH);
+    let name_width = name_width(width, true);
     for group in groups {
         // `!` marks apps above their alert; --once has no colors.
-        let label = if over_alert(group, config) {
-            format!("!{}", group.name)
-        } else {
-            group.name.clone()
-        };
-        let name = truncate_to_width(&label, name_width);
-        let pad = name_width - unicode_width::UnicodeWidthStr::width(name.as_str());
-        let _ = writeln!(
-            out,
-            "{name}{}  {:>3} proc  {:>9}  {}",
-            " ".repeat(pad),
-            group.procs.len(),
-            total_label(group),
-            bar(group.total, stats.total, BAR_WIDTH)
-        );
+        let label = alert_label(group, over_alert(group, config));
+        let _ = writeln!(out, "{}", group_columns(group, &label, name_width, stats.total, true));
     }
     out
 }
@@ -78,7 +27,9 @@ pub fn render_report(stats: &SystemStats, groups: &[Group], config: &Config, wid
 mod tests {
     use super::*;
     use crate::attribution::Bucket;
+    use crate::columns::MAX_NAME_WIDTH;
     use crate::config::Config;
+    use crate::format::bar;
     use crate::model::{Pressure, SystemStats};
 
     const GB: u64 = 1024 * 1024 * 1024;

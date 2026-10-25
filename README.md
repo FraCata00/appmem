@@ -19,7 +19,7 @@ Memory 6.90/8.00 GB (wired 1.40)  Pressure ■■■■■□□□ warn  Swap 2
 ▸ Xcode                  11 proc    2.41 GB  ━━━━─────────
 ▸ Simulator               6 proc     901 MB  ━────────────
 ▸ System                412 proc   ~1.10 GB  ━━───────────
-↑↓ move  ⏎ expand/collapse  k terminate  q quit
+↑↓ move  ⏎ expand/collapse  k terminate  t alert  q quit
 ```
 
 It is small on purpose: about 4 MB of memory and no measurable CPU while

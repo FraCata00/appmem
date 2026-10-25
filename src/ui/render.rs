@@ -5,19 +5,15 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
 
+use crate::columns::{alert_label, group_columns, memory_text, name_width, pressure_word, swap_text};
 use crate::config::Config;
-use crate::format::{format_bytes, truncate_to_width};
-use crate::grouping::Group;
-use crate::grouping::{alert_key, over_alert};
+use crate::format::{format_bytes, pad};
+use crate::grouping::{Group, alert_key, over_alert};
 use crate::model::{Pressure, SystemStats};
-use crate::report::{BAR_WIDTH, MAX_NAME_WIDTH, bar, gb, pressure_word, total_label};
-use crate::ui::state::{Row, RowId, UiState};
+use crate::ui::state::{Row, UiState};
 
 pub const KEY_HELP: &str = "↑↓ move  ⏎ expand/collapse  k terminate  t alert  q quit";
-/// Columns after the name: gap, count or pid, gap, total.
-const TAIL_COLUMNS: usize = 2 + 8 + 2 + 9;
 /// Below this width the bar is dropped so names stay readable.
 const BAR_MIN_WIDTH: usize = 60;
 
@@ -38,7 +34,7 @@ pub fn draw(frame: &mut Frame, view: &View) {
     frame.render_widget(Paragraph::new(header_line(view)), header);
 
     let rows = view.state.rows(view.groups);
-    let selected = view.state.selected_index(view.groups);
+    let selected = view.state.selected_in(&rows);
     let height = list.height as usize;
     let offset = match selected {
         Some(i) if i >= height => i + 1 - height,
@@ -78,10 +74,7 @@ pub fn draw(frame: &mut Frame, view: &View) {
 
 /// The alert threshold of the app the selection is in, if it has one.
 fn selected_alert(view: &View) -> Option<u64> {
-    let key = match view.state.selected.as_ref()? {
-        RowId::Group(key) | RowId::Proc(key, _) => key,
-    };
-    let group = view.groups.iter().find(|g| &g.key == key)?;
+    let group = view.state.selected_group(view.groups)?;
     view.config.alert(&alert_key(group)?)
 }
 
@@ -97,55 +90,31 @@ fn header_line(view: &View) -> Line<'static> {
     } else {
         Style::new()
     };
+    let meter = format!(
+        "{}{} {}",
+        "■".repeat(filled),
+        "□".repeat(8 - filled),
+        pressure_word(stats.pressure)
+    );
     Line::from(vec![
-        Span::raw(format!(
-            "Memory {}/{} GB (wired {})  Pressure ",
-            gb(stats.used),
-            gb(stats.total),
-            gb(stats.wired)
-        )),
-        Span::styled(
-            format!(
-                "{}{} {}",
-                "■".repeat(filled),
-                "□".repeat(8 - filled),
-                pressure_word(stats.pressure)
-            ),
-            style,
-        ),
-        Span::raw(format!("  Swap {} GB", gb(stats.swap_used))),
+        Span::raw(memory_text(stats)),
+        Span::styled(meter, style),
+        Span::raw(swap_text(stats)),
     ])
 }
 
 fn row_text(row: &Row, total_memory: u64, width: usize, mark_alert: bool) -> String {
     let with_bar = width >= BAR_MIN_WIDTH;
-    let tail = if with_bar {
-        TAIL_COLUMNS + 2 + BAR_WIDTH
-    } else {
-        TAIL_COLUMNS
-    };
-    let name_width = width.saturating_sub(2 + tail).clamp(4, MAX_NAME_WIDTH);
+    // Two columns go to the expand arrow, or to the indent of process rows.
+    let name_width = name_width(width.saturating_sub(2), with_bar);
     match row {
         Row::Group(group, open) => {
-            let mut text = format!(
-                "{} {}  {:>3} proc  {:>9}",
-                if *open { '▾' } else { '▸' },
-                pad(
-                    &if mark_alert {
-                        format!("!{}", group.name)
-                    } else {
-                        group.name.clone()
-                    },
-                    name_width
-                ),
-                group.procs.len(),
-                total_label(group),
-            );
-            if with_bar {
-                text.push_str("  ");
-                text.push_str(&bar(group.total, total_memory, BAR_WIDTH));
-            }
-            text
+            let arrow = if *open { '▾' } else { '▸' };
+            let label = alert_label(group, mark_alert);
+            format!(
+                "{arrow} {}",
+                group_columns(group, &label, name_width, total_memory, with_bar)
+            )
         }
         Row::Proc(_, proc) => format!(
             "    {}  {:>8}  {:>9}",
@@ -153,22 +122,13 @@ fn row_text(row: &Row, total_memory: u64, width: usize, mark_alert: bool) -> Str
             proc.pid,
             format_bytes(proc.footprint.unwrap_or(0))
         ),
-        Row::More { count, total, .. } => {
-            format!(
-                "    {}  {:>8}  {:>9}",
-                pad(&format!("… {count} more"), name_width - 2),
-                "",
-                format_bytes(*total)
-            )
-        }
+        Row::More { count, total } => format!(
+            "    {}  {:>8}  {:>9}",
+            pad(&format!("… {count} more"), name_width - 2),
+            "",
+            format_bytes(*total)
+        ),
     }
-}
-
-/// Truncates or pads `s` to exactly `width` columns.
-fn pad(s: &str, width: usize) -> String {
-    let cut = truncate_to_width(s, width);
-    let fill = width.saturating_sub(cut.width());
-    format!("{cut}{}", " ".repeat(fill))
 }
 
 #[cfg(test)]
@@ -354,7 +314,7 @@ mod tests {
         let lines = screen(250, 10, &groups, &selected(&groups), None);
         let row = &lines[1];
         let col = row[..row.find(" proc").unwrap()].width();
-        assert_eq!(col, 2 + crate::report::MAX_NAME_WIDTH + 5, "{row}");
+        assert_eq!(col, 2 + crate::columns::MAX_NAME_WIDTH + 5, "{row}");
     }
 
     #[test]

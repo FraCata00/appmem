@@ -7,21 +7,21 @@ use crate::grouping::{AppMeta, BundleInfo};
 
 #[derive(Default)]
 pub struct PlistBundles {
-    cache: HashMap<PathBuf, (String, Option<String>)>,
+    cache: HashMap<PathBuf, AppMeta>,
 }
 
 impl BundleInfo for PlistBundles {
     fn meta(&mut self, bundle: &Path) -> AppMeta {
-        let (name, bundle_id) = self
-            .cache
-            .entry(bundle.to_path_buf())
-            .or_insert_with(|| read(bundle))
-            .clone();
-        AppMeta { name, bundle_id }
+        if let Some(meta) = self.cache.get(bundle) {
+            return meta.clone();
+        }
+        let meta = read(bundle);
+        self.cache.insert(bundle.to_path_buf(), meta.clone());
+        meta
     }
 }
 
-fn read(bundle: &Path) -> (String, Option<String>) {
+fn read(bundle: &Path) -> AppMeta {
     let plist = plist::Value::from_file(bundle.join("Contents/Info.plist")).ok();
     let dict = plist.as_ref().and_then(|v| v.as_dictionary());
     let get = |key: &str| {
@@ -37,5 +37,8 @@ fn read(bundle: &Path) -> (String, Option<String>) {
     let name = get("CFBundleDisplayName")
         .or_else(|| get("CFBundleName"))
         .unwrap_or(folder);
-    (name, get("CFBundleIdentifier"))
+    AppMeta {
+        name,
+        bundle_id: get("CFBundleIdentifier"),
+    }
 }

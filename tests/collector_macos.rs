@@ -40,11 +40,6 @@ fn snapshot_survives_dead_pid() {
 }
 
 #[test]
-fn responsible_symbol_resolves_or_is_none() {
-    let _ = MacCollector::new();
-}
-
-#[test]
 fn proc_path_of_self_matches_current_exe() {
     let path = proc_path(std::process::id() as i32).unwrap();
     assert_eq!(path.file_name(), std::env::current_exe().unwrap().file_name());
@@ -66,18 +61,12 @@ fn missing_bundle_falls_back_to_folder_name() {
 
 #[test]
 fn terminates_real_child_process() {
-    use appmem::terminate::{Action, execute};
+    use appmem::terminate::terminate;
     use std::os::unix::process::ExitStatusExt;
 
     let mut child = Command::new("/bin/sleep").arg("600").spawn().unwrap();
     let pid = child.id() as i32;
-    let action = Action::Terminate {
-        pid,
-        name: "sleep".into(),
-        path: proc_path(pid),
-        footprint: 0,
-    };
-    execute(&action, proc_path).unwrap();
+    terminate(pid, &proc_path(pid), proc_path).unwrap();
     let status = child.wait().unwrap();
     assert_eq!(status.signal(), Some(libc::SIGTERM));
 }

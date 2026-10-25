@@ -10,19 +10,27 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 
 use crate::collector::{Collector, PlistBundles, proc_path};
 use crate::config::{Config, config_path};
-use crate::format::format_bytes;
+use crate::format::{format_bytes, gb_to_bytes};
 use crate::grouping::{Group, alert_key, build_groups};
 use crate::model::Snapshot;
-use crate::terminate::{Action, confirm_prompt, execute, plan_quit, plan_terminate, quit_result, start_quit};
+use crate::terminate::{Action, confirm_prompt, plan_quit, plan_terminate, quit_result, start_quit, terminate};
 use crate::ui::render::{View, draw};
 use crate::ui::state::{RowId, UiState};
 
 const STATUS_DURATION: Duration = Duration::from_secs(3);
 /// How often to check on a pending quit request.
 const QUIT_POLL: Duration = Duration::from_millis(200);
-const GIB: f64 = (1u64 << 30) as f64;
+const CANCELLED: &str = "Cancelled";
 
-/// The alert being typed in for an app.
+/// What the keyboard is driving right now.
+enum Mode {
+    Browse,
+    /// Waiting for y/N on a terminate or quit.
+    Confirm(Action),
+    /// Typing an alert threshold for an app.
+    EditAlert(AlertEdit),
+}
+
 struct AlertEdit {
     key: String,
     name: String,
@@ -35,10 +43,10 @@ struct App<'c> {
     snap: Snapshot,
     groups: Vec<Group>,
     state: UiState,
-    pending: Option<Action>,
+    mode: Mode,
     /// An app we asked to quit, with osascript still waiting for its answer.
+    /// Runs in the background whatever the mode.
     quitting: Option<(String, Child)>,
-    editing: Option<AlertEdit>,
     config: Config,
     config_path: Option<PathBuf>,
     status: Option<(String, Instant)>,
@@ -65,9 +73,8 @@ impl<'c> App<'c> {
             groups: Vec::new(),
             snap,
             state: UiState::default(),
-            pending: None,
+            mode: Mode::Browse,
             quitting: None,
-            editing: None,
             config: config_path.as_deref().map(Config::load).unwrap_or_default(),
             config_path,
             status: None,
@@ -92,54 +99,41 @@ impl<'c> App<'c> {
         }
     }
 
-    fn set_status(&mut self, message: String) {
-        self.status = Some((message, Instant::now()));
+    fn set_status(&mut self, message: impl Into<String>) {
+        self.status = Some((message.into(), Instant::now()));
+    }
+
+    /// The status line: a pending quit, else the latest message.
+    fn status_text(&self) -> Option<String> {
+        match &self.quitting {
+            Some((name, _)) => Some(format!("Asking {name} to quit…")),
+            None => self.status.as_ref().map(|(m, _)| m.clone()),
+        }
     }
 
     /// What the bottom line asks for, if anything.
     fn prompt(&self) -> Option<String> {
-        if let Some(edit) = &self.editing {
-            return Some(format!("Alert when {} uses more than (GB): {}", edit.name, edit.input));
+        match &self.mode {
+            Mode::Browse => None,
+            Mode::Confirm(action) => Some(confirm_prompt(action)),
+            Mode::EditAlert(edit) => Some(format!("Alert when {} uses more than (GB): {}", edit.name, edit.input)),
         }
-        self.pending.as_ref().map(confirm_prompt)
     }
 
     fn start_alert_edit(&mut self) {
-        let Some(RowId::Group(key) | RowId::Proc(key, _)) = self.state.selected.as_ref() else {
-            return;
-        };
-        let Some(group) = self.groups.iter().find(|g| &g.key == key) else {
+        let Some(group) = self.state.selected_group(&self.groups) else {
             return;
         };
         match alert_key(group) {
             Some(key) => {
-                self.editing = Some(AlertEdit {
+                let name = group.name.clone();
+                self.mode = Mode::EditAlert(AlertEdit {
                     key,
-                    name: group.name.clone(),
+                    name,
                     input: String::new(),
                 });
             }
-            None => self.set_status("System can't have an alert".to_string()),
-        }
-    }
-
-    fn edit_alert_key(&mut self, code: KeyCode) {
-        let Some(edit) = self.editing.as_mut() else { return };
-        match code {
-            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == ',' => edit.input.push(c),
-            KeyCode::Backspace => {
-                edit.input.pop();
-            }
-            KeyCode::Esc => {
-                self.editing = None;
-                self.set_status("Cancelled".to_string());
-            }
-            KeyCode::Enter => {
-                let edit = self.editing.take().unwrap();
-                let message = self.save_alert(&edit);
-                self.set_status(message);
-            }
-            _ => {}
+            None => self.set_status("System can't have an alert"),
         }
     }
 
@@ -154,7 +148,7 @@ impl<'c> App<'c> {
         if !gb.is_finite() {
             return format!("Not a number: {}", edit.input);
         }
-        let bytes = (gb > 0.0).then(|| (gb * GIB).round() as u64);
+        let bytes = gb_to_bytes(gb);
         self.config.set_alert(&edit.key, bytes);
         if let Some(path) = &self.config_path
             && let Err(err) = self.config.save(path)
@@ -195,9 +189,7 @@ impl<'c> App<'c> {
         let mut next_refresh = Instant::now() + interval;
         loop {
             self.poll_quit();
-            if let Some((name, _)) = &self.quitting {
-                self.status = Some((format!("Asking {name} to quit…"), Instant::now()));
-            } else if self
+            if self
                 .status
                 .as_ref()
                 .is_some_and(|(_, at)| at.elapsed() >= STATUS_DURATION)
@@ -205,12 +197,13 @@ impl<'c> App<'c> {
                 self.status = None;
             }
             let prompt = self.prompt();
+            let status = self.status_text();
             terminal.draw(|frame| {
                 let view = View {
                     stats: &self.snap.stats,
                     groups: &self.groups,
                     state: &self.state,
-                    status: self.status.as_ref().map(|(m, _)| m.as_str()),
+                    status: status.as_deref(),
                     prompt: prompt.as_deref(),
                     config: &self.config,
                     color: self.color,
@@ -243,34 +236,31 @@ impl<'c> App<'c> {
         if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
             return false;
         }
-        if self.editing.is_some() {
-            self.edit_alert_key(code);
-            return true;
-        }
-        if let Some(action) = self.pending.take() {
-            if matches!(code, KeyCode::Char('y' | 'Y')) {
-                match action {
-                    Action::Quit { name, bundle_id } => match start_quit(&bundle_id) {
-                        Ok(child) => {
-                            self.set_status(format!("Asking {name} to quit…"));
-                            self.quitting = Some((name, child));
-                        }
-                        Err(err) => self.set_status(err),
-                    },
-                    Action::Terminate { ref name, .. } => {
-                        let message = match execute(&action, proc_path) {
-                            Ok(()) => format!("Sent terminate to {name}"),
-                            Err(err) => err,
-                        };
-                        self.set_status(message);
-                        self.refresh();
-                    }
+        match std::mem::replace(&mut self.mode, Mode::Browse) {
+            Mode::Browse => return self.browse_key(code),
+            Mode::Confirm(action) if matches!(code, KeyCode::Char('y' | 'Y')) => self.confirm(action),
+            Mode::Confirm(_) => self.set_status(CANCELLED),
+            Mode::EditAlert(mut edit) => match code {
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == ',' => {
+                    edit.input.push(c);
+                    self.mode = Mode::EditAlert(edit);
                 }
-            } else {
-                self.set_status("Cancelled".to_string());
-            }
-            return true;
+                KeyCode::Backspace => {
+                    edit.input.pop();
+                    self.mode = Mode::EditAlert(edit);
+                }
+                KeyCode::Esc => self.set_status(CANCELLED),
+                KeyCode::Enter => {
+                    let message = self.save_alert(&edit);
+                    self.set_status(message);
+                }
+                _ => self.mode = Mode::EditAlert(edit),
+            },
         }
+        true
+    }
+
+    fn browse_key(&mut self, code: KeyCode) -> bool {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => return false,
             KeyCode::Up => self.state.move_selection(&self.groups, -1),
@@ -278,11 +268,9 @@ impl<'c> App<'c> {
             KeyCode::Enter => self.state.toggle_expand(),
             KeyCode::Char('t') => self.start_alert_edit(),
             KeyCode::Char('k') => match self.plan() {
-                Some(Ok(Action::Quit { .. })) if self.quitting.is_some() => {
-                    let name = self.quitting.as_ref().map(|(n, _)| n.clone()).unwrap_or_default();
-                    self.set_status(format!("Still waiting for {name} to quit"));
-                }
-                Some(Ok(action)) => self.pending = Some(action),
+                // One quit at a time: the first one is still waiting for its app.
+                Some(Ok(Action::Quit { .. })) if self.quitting.is_some() => {}
+                Some(Ok(action)) => self.mode = Mode::Confirm(action),
                 Some(Err(message)) => self.set_status(message),
                 None => {}
             },
@@ -291,14 +279,28 @@ impl<'c> App<'c> {
         true
     }
 
-    fn plan(&self) -> Option<Result<Action, String>> {
-        match self.state.selected.as_ref()? {
-            RowId::Group(key) => {
-                let group = self.groups.iter().find(|g| &g.key == key)?;
-                Some(plan_quit(group, &self.snap))
+    fn confirm(&mut self, action: Action) {
+        match action {
+            Action::Quit { name, bundle_id } => match start_quit(&bundle_id) {
+                Ok(child) => self.quitting = Some((name, child)),
+                Err(err) => self.set_status(err),
+            },
+            Action::Terminate { name, pid, path, .. } => {
+                let message = match terminate(pid, &path, proc_path) {
+                    Ok(()) => format!("Sent terminate to {name}"),
+                    Err(err) => err,
+                };
+                self.set_status(message);
+                self.refresh();
             }
-            RowId::Proc(key, pid) => {
-                let group = self.groups.iter().find(|g| &g.key == key)?;
+        }
+    }
+
+    fn plan(&self) -> Option<Result<Action, String>> {
+        let group = self.state.selected_group(&self.groups)?;
+        match self.state.selected.as_ref()? {
+            RowId::Group(_) => Some(plan_quit(group, &self.snap)),
+            RowId::Proc(_, pid) => {
                 let proc = group.procs.iter().find(|p| p.pid == *pid)?;
                 Some(plan_terminate(proc, group, &self.snap))
             }
@@ -354,7 +356,7 @@ mod tests {
     }
 
     fn status(app: &App) -> Option<String> {
-        app.status.as_ref().map(|(m, _)| m.clone())
+        app.status_text()
     }
 
     #[test]
@@ -365,7 +367,7 @@ mod tests {
         assert_eq!(app.state.selected, Some(RowId::Group(Bucket::System)));
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(status(&app).as_deref(), Some("System processes can't be terminated"));
-        assert!(app.pending.is_none());
+        assert!(matches!(app.mode, Mode::Browse));
     }
 
     #[test]
@@ -375,10 +377,10 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         app.handle_key(KeyCode::Down, KeyModifiers::NONE);
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
-        let prompt = app.pending.as_ref().map(confirm_prompt).unwrap();
+        let prompt = app.prompt().unwrap();
         assert!(prompt.starts_with("Terminate p1"), "{prompt}");
         assert!(app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE));
-        assert!(app.pending.is_none());
+        assert!(matches!(app.mode, Mode::Browse));
         assert_eq!(status(&app).as_deref(), Some("Cancelled"));
     }
 
@@ -388,7 +390,7 @@ mod tests {
         let mut app = App::new(&mut c).unwrap();
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
         // The fake bundle has no Info.plist, so there is no bundle id to quit by.
-        assert!(app.pending.is_none());
+        assert!(matches!(app.mode, Mode::Browse));
         assert_eq!(status(&app).as_deref(), Some("Can't identify this app to quit it"));
     }
 
@@ -396,7 +398,7 @@ mod tests {
     fn confirmed_quit_does_not_block_the_ui() {
         let mut c = collector();
         let mut app = App::new(&mut c).unwrap();
-        app.pending = Some(Action::Quit {
+        app.mode = Mode::Confirm(Action::Quit {
             name: "Fake".into(),
             bundle_id: "invalid.appmem.test".into(),
         });
@@ -407,7 +409,7 @@ mod tests {
 
         // A second quit while the first is in flight is refused.
         app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE);
-        assert!(app.pending.is_none());
+        assert!(matches!(app.mode, Mode::Browse));
 
         while app.quitting.is_some() && started.elapsed() < Duration::from_secs(20) {
             app.poll_quit();

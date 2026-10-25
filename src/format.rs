@@ -1,17 +1,46 @@
-//! Human-readable sizes and width-aware truncation.
+//! Human-readable sizes, bars and width-aware truncation.
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const MIB: u64 = 1024 * 1024;
-const GIB: u64 = 1024 * MIB;
+pub const MIB: u64 = 1024 * 1024;
+pub const GIB: u64 = 1024 * MIB;
 
 /// Two decimals in GB from 1 GiB up, whole MB below (1024 bases, like Activity Monitor).
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= GIB {
-        format!("{:.2} GB", bytes as f64 / GIB as f64)
+        format!("{} GB", gb(bytes))
     } else {
         format!("{} MB", bytes / MIB)
     }
+}
+
+/// Bytes as GB with two decimals, without the unit.
+pub fn gb(bytes: u64) -> String {
+    format!("{:.2}", bytes as f64 / GIB as f64)
+}
+
+/// A positive, finite amount of GB in bytes; `None` for anything else.
+pub fn gb_to_bytes(gb: f64) -> Option<u64> {
+    (gb.is_finite() && gb > 0.0).then(|| (gb * GIB as f64).round() as u64)
+}
+
+/// `━`/`─` bar of `width` cells for `value` out of `max`. Thin glyphs keep bars
+/// on adjacent lines apart.
+pub fn bar(value: u64, max: u64, width: usize) -> String {
+    let filled = if max == 0 {
+        0
+    } else {
+        ((value as f64 / max as f64) * width as f64).round() as usize
+    };
+    let filled = filled.min(width);
+    format!("{}{}", "━".repeat(filled), "─".repeat(width - filled))
+}
+
+/// Truncates or pads `s` to exactly `width` columns.
+pub fn pad(s: &str, width: usize) -> String {
+    let cut = truncate_to_width(s, width);
+    let fill = width.saturating_sub(cut.width());
+    format!("{cut}{}", " ".repeat(fill))
 }
 
 /// Cuts `s` to at most `width` terminal columns, ending with `…` when cut.
@@ -73,5 +102,13 @@ mod tests {
         assert_eq!(Pressure::from_level(1), Pressure::Normal);
         assert_eq!(Pressure::from_level(2), Pressure::Warn);
         assert_eq!(Pressure::from_level(4), Pressure::Critical);
+    }
+
+    #[test]
+    fn converts_gigabytes() {
+        assert_eq!(gb_to_bytes(1.5), Some(GIB + GIB / 2));
+        assert_eq!(gb_to_bytes(0.0), None);
+        assert_eq!(gb_to_bytes(-1.0), None);
+        assert_eq!(gb_to_bytes(f64::NAN), None);
     }
 }

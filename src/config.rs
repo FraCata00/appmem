@@ -13,7 +13,8 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const GIB: f64 = (1u64 << 30) as f64;
+use crate::format::{GIB, gb_to_bytes};
+
 const ALERTS: &str = "alerts";
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -23,6 +24,10 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn has_alerts(&self) -> bool {
+        !self.alerts.is_empty()
+    }
+
     pub fn alert(&self, key: &str) -> Option<u64> {
         self.alerts.get(key).copied()
     }
@@ -56,8 +61,8 @@ impl Config {
             let Some(gb) = value.and_then(|v| v.parse::<f64>().ok()) else {
                 continue;
             };
-            if gb.is_finite() && gb > 0.0 {
-                config.alerts.insert(key, (gb * GIB).round() as u64);
+            if let Some(bytes) = gb_to_bytes(gb) {
+                config.alerts.insert(key, bytes);
             }
         }
         config
@@ -67,7 +72,7 @@ impl Config {
         let mut text = String::from("# appmem preferences. Alerts are in GB.\n\n[alerts]\n");
         for (key, bytes) in &self.alerts {
             let escaped = key.replace('\\', "\\\\").replace('"', "\\\"");
-            text.push_str(&format!("\"{escaped}\" = {}\n", *bytes as f64 / GIB));
+            text.push_str(&format!("\"{escaped}\" = {}\n", *bytes as f64 / GIB as f64));
         }
         text
     }

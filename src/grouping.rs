@@ -7,6 +7,7 @@ use crate::attribution::{Bucket, attribute};
 use crate::config::Config;
 use crate::model::{ProcInfo, Snapshot};
 
+#[derive(Clone)]
 pub struct AppMeta {
     pub name: String,
     pub bundle_id: Option<String>,
@@ -50,7 +51,10 @@ pub fn build_groups(snap: &Snapshot, bundles: &mut dyn BundleInfo) -> Vec<Group>
             .filter(|&pid| pid != proc.pid)
             .and_then(|pid| paths.get(&pid).copied());
         let key = attribute(proc, responsible, snap.current_uid);
-        let group = groups.entry(key.clone()).or_insert_with(|| new_group(key, bundles));
+        let group = match groups.get_mut(&key) {
+            Some(group) => group,
+            None => groups.entry(key.clone()).or_insert_with(|| new_group(key, bundles)),
+        };
         group.procs.push(proc.clone());
         group.total += footprint;
         listed += footprint;
@@ -102,9 +106,11 @@ pub fn alert_key(group: &Group) -> Option<String> {
 
 /// True when the group uses more memory than its saved alert.
 pub fn over_alert(group: &Group, config: &Config) -> bool {
-    alert_key(group)
-        .and_then(|key| config.alert(&key))
-        .is_some_and(|limit| group.total > limit)
+    // Most users have no alerts: skip building the key for every row.
+    config.has_alerts()
+        && alert_key(group)
+            .and_then(|key| config.alert(&key))
+            .is_some_and(|limit| group.total > limit)
 }
 
 fn new_group(key: Bucket, bundles: &mut dyn BundleInfo) -> Group {

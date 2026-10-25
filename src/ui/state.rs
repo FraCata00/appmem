@@ -15,10 +15,19 @@ pub enum RowId {
     Proc(Bucket, i32),
 }
 
+impl RowId {
+    /// The group this row belongs to.
+    pub fn group_key(&self) -> &Bucket {
+        match self {
+            RowId::Group(key) | RowId::Proc(key, _) => key,
+        }
+    }
+}
+
 pub enum Row<'a> {
     Group(&'a Group, bool),
     Proc(&'a Group, &'a ProcInfo),
-    More { group: &'a Group, count: usize, total: u64 },
+    More { count: usize, total: u64 },
 }
 
 impl Row<'_> {
@@ -27,6 +36,15 @@ impl Row<'_> {
             Row::Group(g, _) => Some(RowId::Group(g.key.clone())),
             Row::Proc(g, p) => Some(RowId::Proc(g.key.clone(), p.pid)),
             Row::More { .. } => None,
+        }
+    }
+
+    /// Whether this row is `id`, without cloning keys.
+    pub fn is(&self, id: &RowId) -> bool {
+        match (self, id) {
+            (Row::Group(g, _), RowId::Group(key)) => &g.key == key,
+            (Row::Proc(g, p), RowId::Proc(key, pid)) => &g.key == key && p.pid == *pid,
+            _ => false,
         }
     }
 }
@@ -51,7 +69,6 @@ impl UiState {
             if !hidden.is_empty() {
                 let total = hidden.iter().filter_map(|p| p.footprint).sum();
                 rows.push(Row::More {
-                    group,
                     count: hidden.len(),
                     total,
                 });
@@ -60,26 +77,38 @@ impl UiState {
         rows
     }
 
+    /// Index of the selected row in `rows`.
+    pub fn selected_in(&self, rows: &[Row]) -> Option<usize> {
+        let selected = self.selected.as_ref()?;
+        rows.iter().position(|r| r.is(selected))
+    }
+
     /// Index of the selected row in `rows(groups)`.
     pub fn selected_index(&self, groups: &[Group]) -> Option<usize> {
-        let selected = self.selected.as_ref()?;
-        self.rows(groups).iter().position(|r| r.id().as_ref() == Some(selected))
+        self.selected_in(&self.rows(groups))
+    }
+
+    /// The group the selection is in.
+    pub fn selected_group<'a>(&self, groups: &'a [Group]) -> Option<&'a Group> {
+        let key = self.selected.as_ref()?.group_key();
+        groups.iter().find(|g| &g.key == key)
     }
 
     /// Moves by `delta` selectable rows, skipping "… N more", clamped at both ends.
     pub fn move_selection(&mut self, groups: &[Group], delta: i32) {
-        let ids: Vec<RowId> = self.rows(groups).iter().filter_map(Row::id).collect();
-        if ids.is_empty() {
+        let rows = self.rows(groups);
+        let selectable: Vec<&Row> = rows.iter().filter(|r| !matches!(r, Row::More { .. })).collect();
+        if selectable.is_empty() {
             self.selected = None;
             return;
         }
         let current = self
             .selected
             .as_ref()
-            .and_then(|s| ids.iter().position(|id| id == s))
+            .and_then(|s| selectable.iter().position(|r| r.is(s)))
             .unwrap_or(0);
-        let target = (current as i64 + i64::from(delta)).clamp(0, ids.len() as i64 - 1) as usize;
-        self.selected = Some(ids[target].clone());
+        let target = (current as i64 + i64::from(delta)).clamp(0, selectable.len() as i64 - 1) as usize;
+        self.selected = selectable[target].id();
     }
 
     pub fn toggle_expand(&mut self) {
@@ -97,21 +126,15 @@ impl UiState {
         }
     }
 
-    /// Keeps the selection meaningful after a refresh.
+    /// Keeps the selection meaningful after a refresh: a row that is still
+    /// visible stays selected, a process that went away selects its app.
     pub fn reconcile(&mut self, groups: &[Group]) {
-        let first = groups.first().map(|g| RowId::Group(g.key.clone()));
+        if self.selected_index(groups).is_some() {
+            return;
+        }
         self.selected = match self.selected.take() {
-            Some(RowId::Group(key)) if groups.iter().any(|g| g.key == key) => Some(RowId::Group(key)),
-            Some(RowId::Proc(key, pid)) => match groups.iter().find(|g| g.key == key) {
-                Some(g)
-                    if self.expanded.contains(&key) && g.procs.iter().take(EXPANDED_LIMIT).any(|p| p.pid == pid) =>
-                {
-                    Some(RowId::Proc(key, pid))
-                }
-                Some(_) => Some(RowId::Group(key)),
-                None => first,
-            },
-            _ => first,
+            Some(RowId::Proc(key, _)) if groups.iter().any(|g| g.key == key) => Some(RowId::Group(key)),
+            _ => groups.first().map(|g| RowId::Group(g.key.clone())),
         };
     }
 }

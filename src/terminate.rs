@@ -109,29 +109,25 @@ pub fn confirm_prompt(action: &Action) -> String {
     }
 }
 
-/// Runs a confirmed action. `current_path` re-reads a pid's executable so a
+/// Sends SIGTERM to `pid`. `current_path` re-reads the pid's executable so a
 /// reused pid is never signalled.
-pub fn execute(action: &Action, current_path: impl Fn(i32) -> Option<PathBuf>) -> Result<(), String> {
-    match action {
-        Action::Terminate { pid, path, .. } => {
-            if current_path(*pid) != *path {
-                return Err(EXITED.into());
-            }
-            // SAFETY: kill only sends a signal; the pid was re-checked just above.
-            if unsafe { libc::kill(*pid, libc::SIGTERM) } == 0 {
-                return Ok(());
-            }
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::ESRCH) {
-                Err(EXITED.into())
-            } else {
-                Err(err.to_string())
-            }
-        }
-        Action::Quit { bundle_id, .. } => {
-            let child = start_quit(bundle_id)?;
-            quit_result(&child.wait_with_output().map_err(|e| e.to_string())?)
-        }
+pub fn terminate(
+    pid: i32,
+    path: &Option<PathBuf>,
+    current_path: impl Fn(i32) -> Option<PathBuf>,
+) -> Result<(), String> {
+    if current_path(pid) != *path {
+        return Err(EXITED.into());
+    }
+    // SAFETY: kill only sends a signal; the pid was re-checked just above.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        Err(EXITED.into())
+    } else {
+        Err(err.to_string())
     }
 }
 
@@ -386,41 +382,25 @@ mod tests {
 
     #[test]
     fn refuses_when_pid_now_points_elsewhere() {
-        let action = Action::Terminate {
-            pid: i32::MAX,
-            name: "x".into(),
-            path: Some("/a".into()),
-            footprint: 0,
-        };
         assert_eq!(
-            execute(&action, |_| Some("/b".into())),
+            terminate(i32::MAX, &Some("/a".into()), |_| Some("/b".into())),
             Err("Process already exited".to_string())
         );
     }
 
     #[test]
     fn exited_process_reports_already_exited() {
-        let action = Action::Terminate {
-            pid: i32::MAX,
-            name: "x".into(),
-            path: Some("/a".into()),
-            footprint: 0,
-        };
         assert_eq!(
-            execute(&action, |_| Some("/a".into())),
+            terminate(i32::MAX, &Some("/a".into()), |_| Some("/a".into())),
             Err("Process already exited".to_string())
         );
     }
 
     #[test]
     fn rejects_quote_in_bundle_id() {
-        let action = Action::Quit {
-            name: "x".into(),
-            bundle_id: "a\" to do shell script \"b".into(),
-        };
         assert_eq!(
-            execute(&action, |_| None),
-            Err("Can't identify this app to quit it".to_string())
+            start_quit("a\" to do shell script \"b").err().as_deref(),
+            Some("Can't identify this app to quit it")
         );
     }
 }

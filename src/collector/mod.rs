@@ -20,6 +20,8 @@ pub trait Collector {
 pub struct MacCollector {
     responsible: Option<ffi::ResponsibleFn>,
     pids: Vec<libc::pid_t>,
+    /// Fixed for the life of the process, so read once.
+    current_uid: u32,
 }
 
 impl MacCollector {
@@ -27,6 +29,8 @@ impl MacCollector {
         MacCollector {
             responsible: ffi::responsible_fn(),
             pids: Vec::new(),
+            // SAFETY: getuid never fails.
+            current_uid: effective_user(unsafe { libc::getuid() }, std::env::var("SUDO_UID").ok().as_deref()),
         }
     }
 
@@ -51,9 +55,9 @@ impl MacCollector {
 
     fn read_proc(&self, pid: libc::pid_t) -> Option<ProcInfo> {
         let info = bsd_info(pid)?;
-        let name = c_name(&info.pbi_name)
+        let name = Some(c_name(&info.pbi_name))
             .filter(|n| !n.is_empty())
-            .or_else(|| c_name(&info.pbi_comm))?;
+            .unwrap_or_else(|| c_name(&info.pbi_comm));
         let responsible_pid = self.responsible.and_then(|f| {
             // SAFETY: the function takes any pid and returns -1 on failure.
             let r = unsafe { f(pid) };
@@ -84,8 +88,7 @@ impl Collector for MacCollector {
         Ok(Snapshot {
             procs,
             stats: system_stats()?,
-            // SAFETY: getuid never fails.
-            current_uid: effective_user(unsafe { libc::getuid() }, std::env::var("SUDO_UID").ok().as_deref()),
+            current_uid: self.current_uid,
             self_pid: std::process::id() as i32,
         })
     }
@@ -124,9 +127,9 @@ fn footprint(pid: libc::pid_t) -> Option<u64> {
     (rc == 0).then(|| unsafe { usage.assume_init() }.ri_phys_footprint)
 }
 
-fn c_name(raw: &[libc::c_char]) -> Option<String> {
+fn c_name(raw: &[libc::c_char]) -> String {
     let bytes: Vec<u8> = raw.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn system_stats() -> io::Result<SystemStats> {
